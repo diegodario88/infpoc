@@ -1,0 +1,31 @@
+# Terraform
+.terraform/
+
+# State files
+*.tfstate
+*.tfstate.*
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Sensitive variable files
+*.tfvars
+*.tfvars.json
+
+# Override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Terraform lock file
+# Remova esta linha se quiser versionar o lockfile (recomendado)
+# .terraform.lock.hcl
+
+# CLI config files
+.terraformrc
+terraform.rc
+
+apache-config
+kubeconfig-apache

@@ -1,0 +1,39 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: infisical-pki-issuer-fix
+rules:
+  # Permissões para os CRDs do Infisical e seus Status
+  - apiGroups: ["infisical-issuer.infisical.com"]
+    resources:
+      ["issuers", "clusterissuers", "issuers/status", "clusterissuers/status"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+
+  # Permissões para ler e atualizar os pedidos do cert-manager
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificaterequests", "certificaterequests/status"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+
+  # Permissões para segredos (Core API group "")
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+
+  # NOVA PERMISSÃO: Necessária para registrar os eventos de "Success" ou "Error"
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: infisical-pki-issuer-fix-binding
+subjects:
+  - kind: ServiceAccount
+    name: infisical-pki-issuer-controller-manager
+    namespace: infisical
+roleRef:
+  kind: ClusterRole
+  name: infisical-pki-issuer-fix
+  apiGroup: rbac.authorization.k8s.io
