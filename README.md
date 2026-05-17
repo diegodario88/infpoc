@@ -44,8 +44,8 @@ instalar o binario Kind separadamente.
 .
 |-- metallb-config.yaml       # IPAddressPool e L2Advertisement do MetalLB
 |-- terraform/
-|-- certs/
-|   `-- cert.pem              # Certificado da CA (gerado manualmente no Infisical)
+|   |`-- certs/
+|       `-- cert.pem          # Certificado da CA (gerado manualmente no Infisical)
 |   |-- phase1/               # Cluster + Infisical basico
 |   |   |-- main.tf
 |   |   |-- infra-poc.tf      # PostgreSQL e Redis (apenas para POC)
