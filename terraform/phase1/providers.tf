@@ -13,9 +13,6 @@ terraform {
       source  = "hashicorp/helm"
       version = "~> 2.11"
     }
-    time = { 
-      source = "hashicorp/time" 
-    }
   }
 }
 
@@ -36,4 +33,3 @@ provider "helm" {
     cluster_ca_certificate = kind_cluster.main.cluster_ca_certificate
   }
 }
-

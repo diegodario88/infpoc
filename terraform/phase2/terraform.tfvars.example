@@ -1,0 +1,10 @@
+# Copie este arquivo para terraform.tfvars e preencha com seus valores
+# NUNCA commite o terraform.tfvars no git
+
+cluster_name              = "apache"
+kubeconfig_path           = "~/.kube/config"
+project_id                = "SEU-PROJECT-UUID-AQUI"
+client_id                 = "SEU-CLIENT-ID-AQUI"
+client_secret             = "SEU-CLIENT-SECRET-AQUI"
+certificate_template_name = "corebank-client-template"
+ca_cert_path              = "../certs/cert.pem"

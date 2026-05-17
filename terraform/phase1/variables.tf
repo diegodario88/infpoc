@@ -9,10 +9,3 @@ variable "node_image" {
   type        = string
   default     = "kindest/node:v1.29.7"
 }
-
-variable "infisical_namespace" {
-  description = "Kubernetes namespace for Infisical"
-  type        = string
-  default     = "infisical"
-}
-
