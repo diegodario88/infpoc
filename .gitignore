@@ -31,10 +31,9 @@ apache-config
 kubeconfig-apache
 
 terraform/phase2/terraform.tfvars
-certs/
 **/.terraform/
 *.tfstate
 *.tfstate.backup
 .terraform.lock.hcl
 phase2/terraform.tfvars
-./terraform/certs/cert.pem
+**/cert.pem
