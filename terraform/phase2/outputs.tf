@@ -4,8 +4,8 @@ output "nginx_ingress_namespace" {
 }
 
 output "ca_secret_location" {
-  description = "Localização do secret da CA (único ponto de configuração do cert.pem)"
-  value       = "secret/infisical-ca no namespace ingress-nginx"
+  description = "Localizacao dos secrets da CA (um por namespace com Ingress mTLS)"
+  value       = "secret/infisical-ca em: ingress-nginx, apolo-apps (e qualquer novo namespace com Ingress mTLS)"
 }
 
 output "next_steps" {

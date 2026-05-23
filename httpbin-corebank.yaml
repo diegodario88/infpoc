@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin-corebank
+  namespace: corebank-apps
+  labels:
+    app: httpbin-corebank
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: httpbin-corebank
+  template:
+    metadata:
+      labels:
+        app: httpbin-corebank
+    spec:
+      containers:
+        - name: httpbin
+          image: kennethreitz/httpbin:latest
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            # Monta o certificado emitido pelo Infisical PKI
+            - name: mtls-cert
+              mountPath: /etc/certs
+              readOnly: true
+      volumes:
+        - name: mtls-cert
+          secret:
+            secretName: corebank-client-tls-secret
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin-corebank
+  namespace: corebank-apps
+spec:
+  selector:
+    app: httpbin-corebank
+  ports:
+    - port: 80
+      targetPort: 80
+  type: ClusterIP

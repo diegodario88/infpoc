@@ -1,3 +1,4 @@
+# ── NGINX INGRESS ─────────────────────────────────────────────────────────────
 resource "helm_release" "nginx_ingress" {
   name             = "ingress-nginx"
   repository       = "https://kubernetes.github.io/ingress-nginx"
@@ -13,7 +14,11 @@ resource "helm_release" "nginx_ingress" {
   }
 }
 
-resource "kubernetes_secret" "nginx_ca_mtls" {
+# CA do Infisical — o cert.pem e distribuido para cada namespace que
+# possui um Ingress com auth-tls. O Nginx exige que o secret esteja
+# no mesmo namespace do recurso Ingress.
+# Para rotacionar a CA: substitua o cert.pem e rode terraform apply.
+resource "kubernetes_secret" "nginx_ca_mtls_ingress_nginx" {
   metadata {
     name      = "infisical-ca"
     namespace = "ingress-nginx"
@@ -25,6 +30,18 @@ resource "kubernetes_secret" "nginx_ca_mtls" {
   depends_on = [helm_release.nginx_ingress]
 }
 
+resource "kubernetes_secret" "nginx_ca_mtls_apolo" {
+  metadata {
+    name      = "infisical-ca"
+    namespace = "apolo-apps"
+  }
+  data = {
+    "ca.crt" = file(var.ca_cert_path)
+  }
+  type = "Opaque"
+}
+
+# ── CERT-MANAGER ──────────────────────────────────────────────────────────────
 resource "helm_release" "cert_manager" {
   name             = "cert-manager"
   repository       = "https://charts.jetstack.io"
@@ -46,6 +63,7 @@ resource "time_sleep" "wait_for_cert_manager" {
   create_duration = "30s"
 }
 
+# ── INFISICAL PKI ISSUER ──────────────────────────────────────────────────────
 resource "helm_release" "infisical_pki_issuer" {
   name       = "infisical-pki-issuer"
   repository = "https://dl.cloudsmith.io/public/infisical/helm-charts/helm/charts/"
@@ -62,6 +80,7 @@ resource "helm_release" "infisical_pki_issuer" {
   depends_on = [time_sleep.wait_for_cert_manager]
 }
 
+# ── INFISICAL SECRETS OPERATOR ────────────────────────────────────────────────
 resource "helm_release" "infisical_operator" {
   name       = "infisical-secrets-operator"
   repository = "https://dl.cloudsmith.io/public/infisical/helm-charts/helm/charts/"
@@ -74,6 +93,9 @@ resource "helm_release" "infisical_operator" {
   }
 }
 
+# ── RBAC ──────────────────────────────────────────────────────────────────────
+
+# Permite ao cert-manager aprovar CertificateRequests do infisical-issuer
 resource "kubernetes_cluster_role" "infisical_issuer_approver" {
   metadata {
     name = "infisical-issuer-approver"
@@ -114,6 +136,7 @@ resource "kubernetes_cluster_role_binding" "infisical_issuer_approver" {
   depends_on = [kubernetes_cluster_role.infisical_issuer_approver]
 }
 
+# Permissões adicionais para o controller do infisical-pki-issuer
 resource "kubernetes_cluster_role" "infisical_pki_issuer_fix" {
   metadata {
     name = "infisical-pki-issuer-fix"
@@ -158,6 +181,9 @@ resource "kubernetes_cluster_role_binding" "infisical_pki_issuer_fix" {
   depends_on = [kubernetes_cluster_role.infisical_pki_issuer_fix]
 }
 
+# ── SECRETS ───────────────────────────────────────────────────────────────────
+
+# Credenciais da Machine Identity para o namespace infisical
 resource "kubernetes_secret" "infisical_operator_auth" {
   metadata {
     name      = "infisical-operator-auth"
@@ -170,6 +196,7 @@ resource "kubernetes_secret" "infisical_operator_auth" {
   type = "Opaque"
 }
 
+# Credenciais da Machine Identity para o namespace corebank-apps
 resource "kubernetes_secret" "infisical_operator_auth_corebank" {
   metadata {
     name      = "infisical-operator-auth"
@@ -182,6 +209,7 @@ resource "kubernetes_secret" "infisical_operator_auth_corebank" {
   type = "Opaque"
 }
 
+# ── ISSUER + CERTIFICATE (via null_resource para evitar problema de CRD) ──────
 resource "time_sleep" "wait_for_pki_issuer" {
   depends_on      = [helm_release.infisical_pki_issuer]
   create_duration = "30s"
@@ -242,6 +270,7 @@ resource "null_resource" "corebank_pki_config" {
   }
 }
 
+# ── INFISICAL SERVICE (muda de NodePort para LoadBalancer) ────────────────────
 resource "kubernetes_service" "infisical_lb" {
   metadata {
     name      = "infisical-lb"
