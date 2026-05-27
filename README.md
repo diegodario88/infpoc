@@ -1,8 +1,9 @@
 # Infisical POC - mTLS com Kubernetes, Kind e Terraform
 
 Prova de conceito para demonstrar o fluxo de emissão e validação de certificados mTLS
-usando o Infisical como PKI (Certificate Authority), integrado ao Kubernetes via
-cert-manager e infisical-pki-issuer.
+usando o Infisical como PKI (Certificate Authority), com rotação governada pelo
+**PKI Subscriber** do painel — um CronJob no cluster sincroniza o bundle ativo e
+o Stakater Reloader faz rolling restart do pod quando o cert renova.
 
 ## Visão Geral da Arquitetura
 
@@ -52,7 +53,7 @@ instalar o binario Kind separadamente.
 |   |   |-- providers.tf
 |   |   |-- variables.tf
 |   |   `-- outputs.tf
-|   `-- phase2/               # PKI, mTLS, Nginx, cert-manager
+|   `-- phase2/               # Nginx Ingress, Reloader, Subscriber sync
 |       |-- main.tf
 |       |-- providers.tf
 |       |-- variables.tf
@@ -90,7 +91,7 @@ Kind Cluster (Terraform phase1)
             |
             +-- CA criada              <-- cert.pem disponivel para download
             +-- Machine Identity       <-- clientId e clientSecret disponiveis
-            +-- Certificate Template   <-- nome do template disponivel
+            +-- PKI Subscriber         <-- corebank-mtls com auto-renewal
             |
             v
     MetalLB (instalacao manual via Helm + kubectl)
@@ -99,11 +100,10 @@ Kind Cluster (Terraform phase1)
     Terraform phase2
             |
             +-- Nginx Ingress Controller (LoadBalancer via MetalLB)
-            +-- cert-manager
-            +-- infisical-pki-issuer   <-- depende do cert-manager
-            +-- RBAC                   <-- depende do infisical-pki-issuer
-            +-- Secrets (credenciais)
-            +-- Issuer + Certificate   <-- depende de tudo acima
+            +-- infisical-secrets-operator
+            +-- Secrets (credenciais da Machine Identity)
+            +-- Stakater Reloader      <-- rollout do pod quando o Secret muda
+            +-- CronJob subscriber-sync <-- puxa o bundle do PKI Subscriber
 ```
 
 ## Passo a Passo
@@ -175,18 +175,22 @@ Todos os valores obtidos aqui serao usados no `terraform.tfvars` da phase2.
 - Adicione a identity ao projeto PKI com role `Admin`:
   - Va em `Project > Access Control > Machine Identities > Add`
 
-**9. Crie o Certificate Template:**
+**9. Crie o PKI Subscriber:**
 
-- Va em `PKI Manager > Certificate Templates > Add Template`
+- Va em `PKI Manager > Subscribers > Add Subscriber`
 - Preencha:
-  - **Name:** `corebank-client-template`
+  - **Subscriber Name:** `corebank-mtls`
   - **Issuing CA:** a CA criada no passo 7
   - **Common Name:** `corebank.service.internal`
-  - **SAN:** `corebank.corebank-namespace.svc.cluster.local`
-  - **Max TTL:** `24h`
+  - **SAN:** `corebank.service.internal, corebank.corebank-apps.svc.cluster.local, httpbin-corebank.corebank-apps.svc.cluster.local`
+  - **TTL:** `2d` (ou `1h` se a UI permitir Hour como unidade)
   - **Key Usage:** Digital Signature, Key Encipherment
   - **Extended Key Usage:** Client Auth
-- Anote o **nome** do template
+- Em `Advanced`:
+  - **Auto Renewal:** habilitado
+  - **Renewal Before:** `1 day` (ou `15 minutes` se possivel)
+- Apos criar, clique em `Issue Certificate` uma vez para gerar o primeiro cert.
+  O CronJob nao emite, apenas sincroniza o bundle ja existente.
 
 ---
 
@@ -199,12 +203,18 @@ Esta etapa e necessaria para que o Nginx Ingress receba um IP externo via LoadBa
 ```bash
 helm repo add metallb https://metallb.github.io/metallb
 helm repo update
-helm install metallb metallb/metallb \
+helm upgrade --install metallb metallb/metallb \
   --namespace metallb-system \
   --create-namespace \
+  --version 0.14.9 \
   --wait \
   --timeout 120s
 ```
+
+> A versao 0.14.9 evita um bug do chart >= 0.15 que falha com
+> `nil pointer evaluating .Values.prometheus.serviceMonitor.enabled`
+> no subchart `frr-k8s`. Como a POC usa L2 mode, frr-k8s nao seria usado
+> de qualquer forma.
 
 **12. Verifique o range de IPs da rede Docker do Kind:**
 
@@ -212,9 +222,10 @@ helm install metallb metallb/metallb \
 docker network inspect kind | grep -A4 '"IPAM"'
 ```
 
-O subnet exibido determina o range disponivel. Por padrao e `172.18.0.0/16`.
-O arquivo `metallb-config.yaml` usa o range `172.18.255.200-172.18.255.250`.
-Ajuste se o subnet do seu ambiente for diferente.
+O subnet exibido determina o range disponivel. Pode variar entre instalacoes
+(ex: `172.18.0.0/16`, `172.22.0.0/16`). O arquivo `metallb-config.yaml`
+ja vem com `172.22.255.200-172.22.255.250` — ajuste o primeiro octeto se o
+subnet do seu Docker for diferente.
 
 **13. Aplique a configuracao do MetalLB:**
 
@@ -247,8 +258,9 @@ kubeconfig_path           = "~/.kube/config"
 project_id                = "UUID-do-projeto-aqui"
 client_id                 = "client-id-da-machine-identity"
 client_secret             = "client-secret-da-machine-identity"
-certificate_template_name = "corebank-client-template"
 ca_cert_path              = "../certs/cert.pem"
+subscriber_name           = "corebank-mtls"
+subscriber_sync_schedule  = "*/15 * * * *"
 ```
 
 **16. Inicialize e aplique a phase2:**
@@ -258,26 +270,32 @@ cd terraform/phase2
 terraform init
 terraform import kubernetes_service.infisical_lb infisical/infisical-lb
 terraform apply -auto-approve
+
+# Dispare manualmente o primeiro sync (sem esperar o cron)
+kubectl create job --from=cronjob/subscriber-sync \
+  -n corebank-apps subscriber-sync-bootstrap
+
+kubectl logs -n corebank-apps -l job-name=subscriber-sync-bootstrap -f
 ```
 
 Isso cria:
 
 - Nginx Ingress Controller como LoadBalancer (recebe IP do MetalLB)
-- Secret `infisical-ca` com o `cert.pem` no namespace `ingress-nginx`
-- cert-manager
-- infisical-pki-issuer
-- RBAC necessario para aprovacao automatica de CertificateRequests
-- Secrets com credenciais da Machine Identity
-- Issuer e Certificate para o namespace `corebank-apps`
+- Secret `infisical-ca` com o `cert.pem` no namespace `ingress-nginx` e `apolo-apps`
+- infisical-secrets-operator
+- Secrets com credenciais da Machine Identity (`infisical` e `corebank-apps`)
+- Stakater Reloader (rollout do pod quando o Secret de cert muda)
+- ConfigMap + RBAC + CronJob `subscriber-sync` no `corebank-apps`
 
-**17. Verifique o certificado emitido:**
+**17. Verifique o Secret sincronizado pelo CronJob:**
 
 ```bash
-kubectl get certificate -n corebank-apps
 kubectl get secret corebank-client-tls-secret -n corebank-apps
+kubectl get secret corebank-client-tls-secret -n corebank-apps \
+  -o jsonpath='{.metadata.annotations.infisical\.com/serial}'; echo
 ```
 
-O certificado deve aparecer com `READY: True`.
+O serial impresso deve casar com o cert mais recente do subscriber no painel.
 
 **18. Inspecione o certificado:**
 
@@ -299,17 +317,14 @@ O campo `EXTERNAL-IP` deve exibir um IP do range configurado no MetalLB.
 
 ## Resolucao de Problemas
 
-### CertificateRequest travado sem APPROVED
+### CronJob falha com "bundle vazio"
 
-O cert-manager v1.13+ nao aprova automaticamente requests de issuers externos.
-O RBAC criado na phase2 resolve isso. Se o problema persistir:
+Acontece quando o subscriber foi criado no painel mas nenhum certificado
+foi emitido ainda. Va em `PKI > Subscribers > corebank-mtls` e clique em
+`Issue Certificate` uma vez. A partir dai o auto-renewal mantem o bundle
+sempre populado.
 
-```bash
-kubectl get certificaterequest -n corebank-apps
-kubectl describe certificaterequest <nome> -n corebank-apps
-```
-
-### Invalid credentials no infisical-pki-issuer
+### Invalid credentials no CronJob (401 do login Universal Auth)
 
 Verifique se o `clientSecret` no Secret do Kubernetes esta correto:
 
@@ -328,28 +343,13 @@ curl -s -X POST http://localhost:3000/api/v1/auth/universal-auth/login \
 
 ### Machine Identity bloqueada (lockout)
 
-O infisical-pki-issuer entra em loop de retry ao receber 401, acumulando
-tentativas e ativando o lockout da identity. Para resolver:
+Se o CronJob recebeu varios 401 seguidos, a identity pode entrar em lockout.
 
-1. Escale o controller para zero para parar o loop:
-
-```bash
-kubectl scale deployment -l app.kubernetes.io/instance=infisical-pki-issuer \
-  -n infisical --replicas=0
-kubectl scale deployment cert-manager -n cert-manager --replicas=0
-```
-
-2. Delete os requests pendentes:
-
-```bash
-kubectl delete certificaterequest --all -n corebank-apps
-```
-
-3. Redefina o lockout no painel do Infisical:
+1. Redefina o lockout no painel do Infisical:
    `Organization > Access Control > Identities > sua identity`
    `Universal Auth > Lockout Options > Reset All Lockouts`
 
-4. Confirme que o login funciona:
+2. Confirme que o login funciona:
 
 ```bash
 curl -s -X POST http://localhost:3000/api/v1/auth/universal-auth/login \
@@ -357,13 +357,11 @@ curl -s -X POST http://localhost:3000/api/v1/auth/universal-auth/login \
   -d '{"clientId":"SEU-CLIENT-ID","clientSecret":"SEU-CLIENT-SECRET"}' | jq .accessToken
 ```
 
-5. Suba os componentes novamente:
+3. Dispare manualmente uma rodada do CronJob para confirmar:
 
 ```bash
-kubectl scale deployment cert-manager -n cert-manager --replicas=1
-kubectl rollout status deployment cert-manager -n cert-manager
-kubectl scale deployment -l app.kubernetes.io/instance=infisical-pki-issuer \
-  -n infisical --replicas=1
+kubectl create job --from=cronjob/subscriber-sync \
+  -n corebank-apps subscriber-sync-retry
 ```
 
 ### Rotacao da CA
@@ -379,6 +377,61 @@ Os pods das aplicacoes nao precisam ser reiniciados.
 
 ---
 
+## Fluxo do Subscriber (rotacao governada pelo painel)
+
+A POC usa o **PKI Subscriber** do Infisical como fonte de verdade unica
+para a rotacao do certificado mTLS. Toda a politica (TTL, auto-renewal)
+vive no painel; o cluster apenas consome:
+
+```
+Painel Infisical (PKI > Subscribers > corebank-mtls)
+    | TTL + Auto-Renewal habilitado
+    v
+Infisical emite/renova o cert internamente
+    |
+    v
+CronJob subscriber-sync (a cada 15 min, namespace corebank-apps)
+    | 1. login Universal Auth (Machine Identity)
+    | 2. GET /api/v1/pki/subscribers/{name}/latest-certificate-bundle
+    | 3. compara serial com a annotation infisical.com/serial no Secret
+    | 4. se mudou, kubectl apply no Secret corebank-client-tls-secret
+    v
+Stakater Reloader (namespace reloader)
+    | observa o Secret anotado no Deployment
+    v
+Rolling restart do httpbin-corebank com o cert novo
+```
+
+### Verificando o ciclo completo
+
+```bash
+# Veja o CronJob agendado
+kubectl get cronjob -n corebank-apps
+
+# Force uma execucao manual sem esperar o agendamento
+kubectl create job --from=cronjob/subscriber-sync \
+  -n corebank-apps subscriber-sync-manual
+
+# Acompanhe o log
+kubectl logs -n corebank-apps -l job-name=subscriber-sync-manual -f
+
+# Confira o serial atual gravado no Secret
+kubectl get secret corebank-client-tls-secret -n corebank-apps \
+  -o jsonpath='{.metadata.annotations.infisical\.com/serial}'; echo
+
+# Observe o rolling restart do pod (deve acontecer quando o serial muda)
+kubectl get pods -n corebank-apps -w
+```
+
+### Forcando uma rotacao para teste
+
+No painel: `PKI > Subscribers > corebank-mtls > Issue Certificate`. Isso
+emite um novo cert imediatamente; na proxima execucao do CronJob o Secret
+e atualizado e o Reloader faz rollout do pod. Tambem da pra disparar
+manualmente o sync com o `kubectl create job --from=cronjob/...` acima.
+
+---
+
 ## Componentes e Versoes
 
 | Componente                 | Versao   | Namespace      |
@@ -388,7 +441,6 @@ Os pods das aplicacoes nao precisam ser reiniciados.
 | PostgreSQL                 | 15.5     | infisical      |
 | Redis                      | 7.2.4    | infisical      |
 | Nginx Ingress Controller   | latest   | ingress-nginx  |
-| cert-manager               | v1.13.0  | cert-manager   |
-| infisical-pki-issuer       | 0.1.1    | infisical      |
 | infisical-secrets-operator | v0.10.33 | infisical      |
-| MetalLB                    | 0.15.3   | metallb-system |
+| MetalLB                    | 0.14.9   | metallb-system |
+| Stakater Reloader          | latest   | reloader       |

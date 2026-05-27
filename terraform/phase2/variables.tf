@@ -27,12 +27,6 @@ variable "project_id" {
   type        = string
 }
 
-variable "certificate_template_name" {
-  description = "Infisical Certificate Template name"
-  type        = string
-  default     = "corebank-client-template"
-}
-
 variable "ca_cert_path" {
   description = "Path to the CA certificate PEM file (downloaded from Infisical)"
   type        = string
@@ -43,4 +37,16 @@ variable "infisical_url" {
   description = "Internal URL of the Infisical service"
   type        = string
   default     = "http://infisical-lb.infisical.svc.cluster.local"
+}
+
+variable "subscriber_name" {
+  description = "Nome do PKI Subscriber cadastrado no painel do Infisical (com auto-renewal habilitado)"
+  type        = string
+  default     = "corebank-mtls"
+}
+
+variable "subscriber_sync_schedule" {
+  description = "Cron schedule do CronJob que sincroniza o bundle do subscriber para o Secret"
+  type        = string
+  default     = "*/15 * * * *"
 }

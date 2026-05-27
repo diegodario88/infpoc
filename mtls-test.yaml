@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mtls-test
+  namespace: corebank-apps
+  labels:
+    app: mtls-test
+spec:
+  restartPolicy: Never
+  containers:
+    - name: curl
+      image: curlimages/curl:latest
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: certs
+          mountPath: /etc/certs
+          readOnly: true
+  volumes:
+    - name: certs
+      secret:
+        secretName: corebank-client-tls-secret

@@ -5,24 +5,28 @@ output "nginx_ingress_namespace" {
 
 output "ca_secret_location" {
   description = "Localizacao dos secrets da CA (um por namespace com Ingress mTLS)"
-  value       = "secret/infisical-ca em: ingress-nginx, apolo-apps (e qualquer novo namespace com Ingress mTLS)"
+  value       = "secret/infisical-ca em: ingress-nginx, apolo-apps"
 }
 
 output "next_steps" {
-  description = "Próximos passos após phase2"
+  description = "Proximos passos apos phase2"
   value       = <<-EOT
 
-    ✅ PHASE 2 CONCLUÍDA
+    PHASE 2 CONCLUIDA
 
-    Verifique o certificado emitido:
-      kubectl get certificate -n corebank-apps
-      kubectl get secret corebank-client-tls-secret -n corebank-apps
+    1. Dispare manualmente o primeiro sync do subscriber:
+       kubectl create job --from=cronjob/subscriber-sync \
+         -n corebank-apps subscriber-sync-bootstrap
+       kubectl logs -n corebank-apps -l job-name=subscriber-sync-bootstrap -f
 
-    Verifique o Nginx Ingress:
-      kubectl get svc -n ingress-nginx
+    2. Confirme que o Secret foi criado com o cert vindo do subscriber:
+       kubectl get secret corebank-client-tls-secret -n corebank-apps
+       kubectl get secret corebank-client-tls-secret -n corebank-apps \
+         -o jsonpath='{.metadata.annotations.infisical\.com/serial}'; echo
 
-    Para rotacionar a CA no futuro, atualize apenas:
-      secret/infisical-ca no namespace ingress-nginx
-    E aplique: terraform apply
+    3. Confirme o IP externo do Nginx (vindo do MetalLB):
+       kubectl get svc -n ingress-nginx
+
+    Forcar rotacao no painel: PKI > Subscribers > corebank-mtls > Issue Certificate
   EOT
 }

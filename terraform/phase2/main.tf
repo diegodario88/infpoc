@@ -17,7 +17,6 @@ resource "helm_release" "nginx_ingress" {
 # CA do Infisical — o cert.pem e distribuido para cada namespace que
 # possui um Ingress com auth-tls. O Nginx exige que o secret esteja
 # no mesmo namespace do recurso Ingress.
-# Para rotacionar a CA: substitua o cert.pem e rode terraform apply.
 resource "kubernetes_secret" "nginx_ca_mtls_ingress_nginx" {
   metadata {
     name      = "infisical-ca"
@@ -41,45 +40,6 @@ resource "kubernetes_secret" "nginx_ca_mtls_apolo" {
   type = "Opaque"
 }
 
-# ── CERT-MANAGER ──────────────────────────────────────────────────────────────
-resource "helm_release" "cert_manager" {
-  name             = "cert-manager"
-  repository       = "https://charts.jetstack.io"
-  chart            = "cert-manager"
-  namespace        = "cert-manager"
-  create_namespace = true
-  version          = "v1.13.0"
-  wait             = true
-  timeout          = 120
-
-  set {
-    name  = "installCRDs"
-    value = "true"
-  }
-}
-
-resource "time_sleep" "wait_for_cert_manager" {
-  depends_on      = [helm_release.cert_manager]
-  create_duration = "30s"
-}
-
-# ── INFISICAL PKI ISSUER ──────────────────────────────────────────────────────
-resource "helm_release" "infisical_pki_issuer" {
-  name       = "infisical-pki-issuer"
-  repository = "https://dl.cloudsmith.io/public/infisical/helm-charts/helm/charts/"
-  chart      = "infisical-pki-issuer"
-  namespace  = "infisical"
-  wait       = true
-  timeout    = 120
-
-  set {
-    name  = "host"
-    value = var.infisical_url
-  }
-
-  depends_on = [time_sleep.wait_for_cert_manager]
-}
-
 # ── INFISICAL SECRETS OPERATOR ────────────────────────────────────────────────
 resource "helm_release" "infisical_operator" {
   name       = "infisical-secrets-operator"
@@ -91,94 +51,6 @@ resource "helm_release" "infisical_operator" {
     name  = "host"
     value = var.infisical_url
   }
-}
-
-# ── RBAC ──────────────────────────────────────────────────────────────────────
-
-# Permite ao cert-manager aprovar CertificateRequests do infisical-issuer
-resource "kubernetes_cluster_role" "infisical_issuer_approver" {
-  metadata {
-    name = "infisical-issuer-approver"
-  }
-  rule {
-    api_groups = ["cert-manager.io"]
-    resources  = ["certificaterequests"]
-    verbs      = ["get", "list", "watch", "update"]
-  }
-  rule {
-    api_groups = ["cert-manager.io"]
-    resources  = ["certificaterequests/approval"]
-    verbs      = ["update"]
-  }
-  rule {
-    api_groups     = ["cert-manager.io"]
-    resources      = ["signers"]
-    verbs          = ["approve"]
-    resource_names = ["issuers.infisical-issuer.infisical.com/*"]
-  }
-  depends_on = [helm_release.cert_manager]
-}
-
-resource "kubernetes_cluster_role_binding" "infisical_issuer_approver" {
-  metadata {
-    name = "infisical-issuer-approver"
-  }
-  role_ref {
-    api_group = "rbac.authorization.k8s.io"
-    kind      = "ClusterRole"
-    name      = kubernetes_cluster_role.infisical_issuer_approver.metadata[0].name
-  }
-  subject {
-    kind      = "ServiceAccount"
-    name      = "cert-manager"
-    namespace = "cert-manager"
-  }
-  depends_on = [kubernetes_cluster_role.infisical_issuer_approver]
-}
-
-# Permissões adicionais para o controller do infisical-pki-issuer
-resource "kubernetes_cluster_role" "infisical_pki_issuer_fix" {
-  metadata {
-    name = "infisical-pki-issuer-fix"
-  }
-  rule {
-    api_groups = ["infisical-issuer.infisical.com"]
-    resources  = ["issuers", "clusterissuers", "issuers/status", "clusterissuers/status"]
-    verbs      = ["get", "list", "watch", "update", "patch"]
-  }
-  rule {
-    api_groups = ["cert-manager.io"]
-    resources  = ["certificaterequests", "certificaterequests/status"]
-    verbs      = ["get", "list", "watch", "update", "patch"]
-  }
-  rule {
-    api_groups = [""]
-    resources  = ["secrets"]
-    verbs      = ["get", "list", "watch"]
-  }
-  rule {
-    api_groups = [""]
-    resources  = ["events"]
-    verbs      = ["create", "patch", "update"]
-  }
-  depends_on = [helm_release.infisical_pki_issuer]
-}
-
-resource "kubernetes_cluster_role_binding" "infisical_pki_issuer_fix" {
-  metadata {
-    name = "infisical-pki-issuer-fix-binding"
-  }
-  role_ref {
-    api_group = "rbac.authorization.k8s.io"
-    kind      = "ClusterRole"
-    name      = kubernetes_cluster_role.infisical_pki_issuer_fix.metadata[0].name
-  }
-  subject {
-    kind      = "ServiceAccount"
-    name      = "infisical-pki-issuer-controller-manager"
-    namespace = "infisical"
-  }
-  depends_on = [kubernetes_cluster_role.infisical_pki_issuer_fix]
 }
 
 # ── SECRETS ───────────────────────────────────────────────────────────────────
@@ -209,65 +81,230 @@ resource "kubernetes_secret" "infisical_operator_auth_corebank" {
   type = "Opaque"
 }
 
-# ── ISSUER + CERTIFICATE (via null_resource para evitar problema de CRD) ──────
-resource "time_sleep" "wait_for_pki_issuer" {
-  depends_on      = [helm_release.infisical_pki_issuer]
-  create_duration = "30s"
+# ── RELOADER (rolling restart quando o Secret do cert muda) ───────────────────
+resource "helm_release" "reloader" {
+  name             = "reloader"
+  repository       = "https://stakater.github.io/stakater-charts"
+  chart            = "reloader"
+  namespace        = "reloader"
+  create_namespace = true
+  wait             = true
+  timeout          = 120
 }
 
-resource "null_resource" "corebank_pki_config" {
-  depends_on = [
-    time_sleep.wait_for_pki_issuer,
-    kubernetes_secret.infisical_operator_auth_corebank,
-    kubernetes_cluster_role_binding.infisical_issuer_approver,
-    kubernetes_cluster_role_binding.infisical_pki_issuer_fix,
-  ]
-
-  triggers = {
-    client_id     = var.client_id
-    project_id    = var.project_id
-    template      = var.certificate_template_name
-    infisical_url = var.infisical_url
+# ── SUBSCRIBER SYNC: ConfigMap com o script ───────────────────────────────────
+# Script que autentica via Universal Auth, busca o bundle do subscriber
+# e faz patch no Secret corebank-client-tls-secret. O Reloader detecta
+# a mudanca de hash e dispara rolling restart do Deployment anotado.
+resource "kubernetes_config_map" "subscriber_sync_script" {
+  metadata {
+    name      = "subscriber-sync-script"
+    namespace = "corebank-apps"
   }
 
-  provisioner "local-exec" {
-    command = <<-EOT
-      kubectl apply -f - <<EOF
-      apiVersion: infisical-issuer.infisical.com/v1alpha1
-      kind: Issuer
+  data = {
+    "sync.sh" = <<-EOT
+      #!/bin/sh
+      set -eu
+
+      : "$${INFISICAL_URL:?must be set}"
+      : "$${CLIENT_ID:?must be set}"
+      : "$${CLIENT_SECRET:?must be set}"
+      : "$${PROJECT_ID:?must be set}"
+      : "$${SUBSCRIBER_NAME:?must be set}"
+      : "$${SECRET_NAME:?must be set}"
+      : "$${NAMESPACE:?must be set}"
+
+      echo "[sync] login Universal Auth"
+      TOKEN=$(curl -fsS -X POST "$${INFISICAL_URL}/api/v1/auth/universal-auth/login" \
+        -H "Content-Type: application/json" \
+        -d "{\"clientId\":\"$${CLIENT_ID}\",\"clientSecret\":\"$${CLIENT_SECRET}\"}" \
+        | jq -r .accessToken)
+
+      if [ -z "$${TOKEN}" ] || [ "$${TOKEN}" = "null" ]; then
+        echo "[sync] falha no login Universal Auth" >&2
+        exit 1
+      fi
+
+      echo "[sync] buscando latest-certificate-bundle do subscriber $${SUBSCRIBER_NAME}"
+      BUNDLE=$(curl -fsS \
+        -H "Authorization: Bearer $${TOKEN}" \
+        "$${INFISICAL_URL}/api/v1/pki/subscribers/$${SUBSCRIBER_NAME}/latest-certificate-bundle?projectId=$${PROJECT_ID}")
+
+      CERT=$(echo "$${BUNDLE}" | jq -r .certificate)
+      KEY=$(echo "$${BUNDLE}" | jq -r .privateKey)
+      CHAIN=$(echo "$${BUNDLE}" | jq -r .certificateChain)
+
+      if [ -z "$${CERT}" ] || [ "$${CERT}" = "null" ]; then
+        echo "[sync] bundle vazio - subscriber ainda nao tem cert ativo?" >&2
+        exit 1
+      fi
+
+      SERIAL=$(echo "$${BUNDLE}" | jq -r .serialNumber)
+      echo "[sync] serial recebido: $${SERIAL}"
+
+      # Compara serial atual no Secret. Se igual, nao mexe (evita restart desnecessario).
+      CURRENT_SERIAL=$(kubectl get secret "$${SECRET_NAME}" -n "$${NAMESPACE}" \
+        -o jsonpath='{.metadata.annotations.infisical\.com/serial}' 2>/dev/null || echo "")
+
+      if [ "$${CURRENT_SERIAL}" = "$${SERIAL}" ]; then
+        echo "[sync] serial inalterado, nada a fazer"
+        exit 0
+      fi
+
+      echo "[sync] atualizando Secret $${SECRET_NAME}"
+      TLS_CRT=$(printf '%s' "$${CERT}" | base64 -w0)
+      TLS_KEY=$(printf '%s' "$${KEY}"  | base64 -w0)
+      CA_CRT=$(printf '%s'  "$${CHAIN}" | base64 -w0)
+
+      kubectl apply -f - <<EOF_INNER
+      apiVersion: v1
+      kind: Secret
       metadata:
-        name: apolo-pki-issuer
-        namespace: corebank-apps
-      spec:
-        url: ${var.infisical_url}
-        projectId: "${var.project_id}"
-        certificateTemplateName: "${var.certificate_template_name}"
-        authentication:
-          universalAuth:
-            clientId: "${var.client_id}"
-            secretRef:
-              name: infisical-operator-auth
-              key: clientSecret
-      ---
-      apiVersion: cert-manager.io/v1
-      kind: Certificate
-      metadata:
-        name: corebank-mtls-identity
-        namespace: corebank-apps
-      spec:
-        secretName: corebank-client-tls-secret
-        commonName: corebank.service.internal
-        dnsNames:
-          - corebank.corebank-namespace.svc.cluster.local
-        duration: 24h
-        renewBefore: 6h
-        issuerRef:
-          name: apolo-pki-issuer
-          kind: Issuer
-          group: infisical-issuer.infisical.com
-      EOF
+        name: $${SECRET_NAME}
+        namespace: $${NAMESPACE}
+        annotations:
+          infisical.com/serial: "$${SERIAL}"
+          infisical.com/subscriber: "$${SUBSCRIBER_NAME}"
+      type: kubernetes.io/tls
+      data:
+        tls.crt: $${TLS_CRT}
+        tls.key: $${TLS_KEY}
+        ca.crt:  $${CA_CRT}
+      EOF_INNER
+
+      echo "[sync] ok"
     EOT
   }
+}
+
+# ── SUBSCRIBER SYNC: RBAC ─────────────────────────────────────────────────────
+resource "kubernetes_service_account" "subscriber_sync" {
+  metadata {
+    name      = "subscriber-sync"
+    namespace = "corebank-apps"
+  }
+}
+
+resource "kubernetes_role" "subscriber_sync" {
+  metadata {
+    name      = "subscriber-sync"
+    namespace = "corebank-apps"
+  }
+  rule {
+    api_groups = [""]
+    resources  = ["secrets"]
+    verbs      = ["get", "create", "update", "patch"]
+  }
+}
+
+resource "kubernetes_role_binding" "subscriber_sync" {
+  metadata {
+    name      = "subscriber-sync"
+    namespace = "corebank-apps"
+  }
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role.subscriber_sync.metadata[0].name
+  }
+  subject {
+    kind      = "ServiceAccount"
+    name      = kubernetes_service_account.subscriber_sync.metadata[0].name
+    namespace = "corebank-apps"
+  }
+}
+
+# ── SUBSCRIBER SYNC: CronJob ──────────────────────────────────────────────────
+resource "kubernetes_cron_job_v1" "subscriber_sync" {
+  metadata {
+    name      = "subscriber-sync"
+    namespace = "corebank-apps"
+  }
+
+  spec {
+    schedule                      = var.subscriber_sync_schedule
+    concurrency_policy            = "Forbid"
+    successful_jobs_history_limit = 1
+    failed_jobs_history_limit     = 3
+
+    job_template {
+      metadata {}
+      spec {
+        backoff_limit = 2
+        template {
+          metadata {}
+          spec {
+            service_account_name = kubernetes_service_account.subscriber_sync.metadata[0].name
+            restart_policy       = "OnFailure"
+
+            container {
+              name    = "sync"
+              image   = "alpine/k8s:1.29.7"
+              command = ["/bin/sh", "/scripts/sync.sh"]
+
+              env {
+                name  = "INFISICAL_URL"
+                value = var.infisical_url
+              }
+              env {
+                name  = "PROJECT_ID"
+                value = var.project_id
+              }
+              env {
+                name  = "SUBSCRIBER_NAME"
+                value = var.subscriber_name
+              }
+              env {
+                name  = "SECRET_NAME"
+                value = "corebank-client-tls-secret"
+              }
+              env {
+                name  = "NAMESPACE"
+                value = "corebank-apps"
+              }
+              env {
+                name = "CLIENT_ID"
+                value_from {
+                  secret_key_ref {
+                    name = kubernetes_secret.infisical_operator_auth_corebank.metadata[0].name
+                    key  = "clientId"
+                  }
+                }
+              }
+              env {
+                name = "CLIENT_SECRET"
+                value_from {
+                  secret_key_ref {
+                    name = kubernetes_secret.infisical_operator_auth_corebank.metadata[0].name
+                    key  = "clientSecret"
+                  }
+                }
+              }
+
+              volume_mount {
+                name       = "script"
+                mount_path = "/scripts"
+              }
+            }
+
+            volume {
+              name = "script"
+              config_map {
+                name         = kubernetes_config_map.subscriber_sync_script.metadata[0].name
+                default_mode = "0755"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    kubernetes_role_binding.subscriber_sync,
+    kubernetes_secret.infisical_operator_auth_corebank,
+  ]
 }
 
 # ── INFISICAL SERVICE (muda de NodePort para LoadBalancer) ────────────────────
