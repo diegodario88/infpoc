@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: subscriber-sync
+  namespace: corebank-apps
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: subscriber-sync
+  namespace: corebank-apps
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: subscriber-sync
+  namespace: corebank-apps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: subscriber-sync
+subjects:
+  - kind: ServiceAccount
+    name: subscriber-sync
+    namespace: corebank-apps

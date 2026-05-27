@@ -318,7 +318,17 @@ no painel. Caso precise trocar:
 
 1. Gera a nova CA no Infisical e baixa o novo `cert.pem`
 2. Substitui `terraform/certs/cert.pem`
-3. `terraform apply` na phase2
+3. Recria os Secrets `infisical-ca` nos dois namespaces:
+
+```bash
+kubectl delete secret infisical-ca -n ingress-nginx -n apolo-apps
+kubectl create secret generic infisical-ca \
+  --from-file=ca.crt=terraform/certs/cert.pem \
+  -n ingress-nginx
+kubectl create secret generic infisical-ca \
+  --from-file=ca.crt=terraform/certs/cert.pem \
+  -n apolo-apps
+```
 
 Apenas os Secrets `infisical-ca` (em `ingress-nginx` e `apolo-apps`) sao
 atualizados. Os pods das aplicacoes nao precisam ser reiniciados — eles

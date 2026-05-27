@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: subscriber-sync-config
+  namespace: corebank-apps
+data:
+  # URL interna do Infisical dentro do cluster
+  INFISICAL_URL: "http://infisical-lb.infisical.svc.cluster.local"
+  # UUID do projeto PKI no painel do Infisical (substitua pelo seu)
+  PROJECT_ID: "4673bab3-22af-4d24-be9b-1ccab87de118"
+  # Nome do PKI Subscriber cadastrado no painel
+  SUBSCRIBER_NAME: "corebank-mtls"
+  # Secret K8s alvo onde o cert vai ser materializado
+  SECRET_NAME: "corebank-client-tls-secret"
+  NAMESPACE: "corebank-apps"

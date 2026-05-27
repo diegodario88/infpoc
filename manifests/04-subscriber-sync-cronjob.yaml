@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: subscriber-sync
+  namespace: corebank-apps
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: subscriber-sync
+          restartPolicy: OnFailure
+          containers:
+            - name: sync
+              image: alpine/k8s:1.29.7
+              command: ["/bin/sh", "/scripts/sync.sh"]
+              envFrom:
+                # Config nao-sensivel (URL, project, subscriber, secret alvo)
+                - configMapRef:
+                    name: subscriber-sync-config
+              env:
+                # Credenciais da Machine Identity (criadas via kubectl create secret)
+                - name: CLIENT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: infisical-operator-auth
+                      key: clientId
+                - name: CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: infisical-operator-auth
+                      key: clientSecret
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+          volumes:
+            - name: script
+              configMap:
+                name: subscriber-sync-script
+                defaultMode: 0755
