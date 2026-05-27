@@ -6,9 +6,10 @@ metadata:
   labels:
     app: httpbin-corebank
   annotations:
-    # Reloader observa este Secret; quando o CronJob de sync atualiza o cert
-    # vindo do PKI Subscriber do Infisical, o Deployment recebe rolling restart.
-    secret.reloader.stakater.com/reload: "corebank-client-tls-secret"
+    # Reloader observa estes Secrets; rolling restart sempre que:
+    #  - corebank-client-tls-secret: rotacao do cert mTLS (PKI Subscriber)
+    #  - corebank-app-env:           mudanca nos secrets de aplicacao (InfisicalSecret)
+    secret.reloader.stakater.com/reload: "corebank-client-tls-secret,corebank-app-env"
 spec:
   replicas: 1
   selector:
@@ -24,6 +25,9 @@ spec:
           image: kennethreitz/httpbin:latest
           ports:
             - containerPort: 80
+          envFrom:
+            - secretRef:
+                name: corebank-app-env
           volumeMounts:
             # Monta o certificado emitido pelo Infisical PKI
             - name: mtls-cert
