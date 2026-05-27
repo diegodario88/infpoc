@@ -43,24 +43,30 @@ instalar o binario Kind separadamente.
 
 ```
 .
+|-- README.md
+|-- docs/
+|   `-- fluxos.md             # Detalhes operacionais e troubleshooting
 |-- metallb-config.yaml       # IPAddressPool e L2Advertisement do MetalLB
-|-- terraform/
-|   |`-- certs/
-|       `-- cert.pem          # Certificado da CA (gerado manualmente no Infisical)
-|   |-- phase1/               # Cluster + Infisical basico
-|   |   |-- main.tf
-|   |   |-- infra-poc.tf      # PostgreSQL e Redis (apenas para POC)
-|   |   |-- providers.tf
-|   |   |-- variables.tf
-|   |   `-- outputs.tf
-|   `-- phase2/               # Nginx Ingress, Reloader, Subscriber sync
-|       |-- main.tf
-|       |-- providers.tf
-|       |-- variables.tf
-|       |-- outputs.tf
-|       |-- terraform.tfvars          # NAO commitar - credenciais
-|       `-- terraform.tfvars.example  # Modelo para o tfvars
-`-- README.md
+|-- corebank-secrets.yaml     # InfisicalSecret (sync de DB_URL etc)
+|-- httpbin-corebank.yaml     # Deployment cliente mTLS, com Reloader
+|-- httpbin-apolo.yaml        # Deployment + Ingress com auth-tls
+|-- mtls-test.yaml            # Pod efemero com curl para validar mTLS
+`-- terraform/
+    |-- certs/
+    |   `-- cert.pem          # Certificado da CA (download do painel)
+    |-- phase1/               # Cluster + Infisical basico
+    |   |-- main.tf
+    |   |-- infra-poc.tf      # PostgreSQL e Redis (apenas para POC)
+    |   |-- providers.tf
+    |   |-- variables.tf
+    |   `-- outputs.tf
+    `-- phase2/               # Nginx Ingress, Reloader, Subscriber sync
+        |-- main.tf
+        |-- providers.tf
+        |-- variables.tf
+        |-- outputs.tf
+        |-- terraform.tfvars          # NAO commitar - credenciais
+        `-- terraform.tfvars.example  # Modelo para o tfvars
 ```
 
 > **Importante:** O arquivo `certs/cert.pem` e o `terraform.tfvars` da phase2
@@ -315,120 +321,13 @@ O campo `EXTERNAL-IP` deve exibir um IP do range configurado no MetalLB.
 
 ---
 
-## Resolucao de Problemas
+## Fluxos e Troubleshooting
 
-### CronJob falha com "bundle vazio"
+Os detalhes operacionais dos dois fluxos da POC (rotacao de cert via PKI
+Subscriber + gerenciamento de secrets via InfisicalSecret) e o
+troubleshooting comum estao em **[docs/fluxos.md](docs/fluxos.md)**.
 
-Acontece quando o subscriber foi criado no painel mas nenhum certificado
-foi emitido ainda. Va em `PKI > Subscribers > corebank-mtls` e clique em
-`Issue Certificate` uma vez. A partir dai o auto-renewal mantem o bundle
-sempre populado.
-
-### Invalid credentials no CronJob (401 do login Universal Auth)
-
-Verifique se o `clientSecret` no Secret do Kubernetes esta correto:
-
-```bash
-kubectl get secret infisical-operator-auth -n corebank-apps \
-  -o jsonpath='{.data.clientSecret}' | base64 -d
-```
-
-Confirme as credenciais fazendo login diretamente:
-
-```bash
-curl -s -X POST http://localhost:3000/api/v1/auth/universal-auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"clientId":"SEU-CLIENT-ID","clientSecret":"SEU-CLIENT-SECRET"}' | jq .
-```
-
-### Machine Identity bloqueada (lockout)
-
-Se o CronJob recebeu varios 401 seguidos, a identity pode entrar em lockout.
-
-1. Redefina o lockout no painel do Infisical:
-   `Organization > Access Control > Identities > sua identity`
-   `Universal Auth > Lockout Options > Reset All Lockouts`
-
-2. Confirme que o login funciona:
-
-```bash
-curl -s -X POST http://localhost:3000/api/v1/auth/universal-auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"clientId":"SEU-CLIENT-ID","clientSecret":"SEU-CLIENT-SECRET"}' | jq .accessToken
-```
-
-3. Dispare manualmente uma rodada do CronJob para confirmar:
-
-```bash
-kubectl create job --from=cronjob/subscriber-sync \
-  -n corebank-apps subscriber-sync-retry
-```
-
-### Rotacao da CA
-
-Para rotacionar a CA sem impactar os pods das aplicacoes:
-
-1. Gere a nova CA no Infisical e baixe o novo `cert.pem`
-2. Substitua o arquivo `certs/cert.pem`
-3. Execute `terraform apply` na phase2
-
-Apenas o Secret `infisical-ca` no namespace `ingress-nginx` sera atualizado.
-Os pods das aplicacoes nao precisam ser reiniciados.
-
----
-
-## Fluxo do Subscriber (rotacao governada pelo painel)
-
-A POC usa o **PKI Subscriber** do Infisical como fonte de verdade unica
-para a rotacao do certificado mTLS. Toda a politica (TTL, auto-renewal)
-vive no painel; o cluster apenas consome:
-
-```
-Painel Infisical (PKI > Subscribers > corebank-mtls)
-    | TTL + Auto-Renewal habilitado
-    v
-Infisical emite/renova o cert internamente
-    |
-    v
-CronJob subscriber-sync (a cada 15 min, namespace corebank-apps)
-    | 1. login Universal Auth (Machine Identity)
-    | 2. GET /api/v1/pki/subscribers/{name}/latest-certificate-bundle
-    | 3. compara serial com a annotation infisical.com/serial no Secret
-    | 4. se mudou, kubectl apply no Secret corebank-client-tls-secret
-    v
-Stakater Reloader (namespace reloader)
-    | observa o Secret anotado no Deployment
-    v
-Rolling restart do httpbin-corebank com o cert novo
-```
-
-### Verificando o ciclo completo
-
-```bash
-# Veja o CronJob agendado
-kubectl get cronjob -n corebank-apps
-
-# Force uma execucao manual sem esperar o agendamento
-kubectl create job --from=cronjob/subscriber-sync \
-  -n corebank-apps subscriber-sync-manual
-
-# Acompanhe o log
-kubectl logs -n corebank-apps -l job-name=subscriber-sync-manual -f
-
-# Confira o serial atual gravado no Secret
-kubectl get secret corebank-client-tls-secret -n corebank-apps \
-  -o jsonpath='{.metadata.annotations.infisical\.com/serial}'; echo
-
-# Observe o rolling restart do pod (deve acontecer quando o serial muda)
-kubectl get pods -n corebank-apps -w
-```
-
-### Forcando uma rotacao para teste
-
-No painel: `PKI > Subscribers > corebank-mtls > Issue Certificate`. Isso
-emite um novo cert imediatamente; na proxima execucao do CronJob o Secret
-e atualizado e o Reloader faz rollout do pod. Tambem da pra disparar
-manualmente o sync com o `kubectl create job --from=cronjob/...` acima.
+Tambem la: como rodar o teste end-to-end de mTLS com o `mtls-test.yaml`.
 
 ---
 
