@@ -46,19 +46,19 @@ instalar o binario Kind separadamente.
 .
 |-- README.md
 |-- docs/
-|   `-- fluxos.md             # Detalhes operacionais e troubleshooting
-|-- metallb-config.yaml       # IPAddressPool e L2Advertisement do MetalLB
-|-- corebank-secrets.yaml     # InfisicalSecret (sync de DB_URL etc)
-|-- httpbin-corebank.yaml     # Deployment cliente mTLS, com Reloader
-|-- httpbin-apolo.yaml        # Deployment + Ingress com auth-tls
-|-- mtls-test.yaml            # Pod efemero com curl para validar mTLS
-|-- manifests/                # Phase 2: helm install + kubectl apply manual
-|   |-- README.md             # Passo a passo
-|   |-- 01-subscriber-sync-config.yaml
-|   |-- 02-subscriber-sync-script.yaml
-|   |-- 03-subscriber-sync-rbac.yaml
-|   |-- 04-subscriber-sync-cronjob.yaml
-|   `-- 05-infisical-lb-service.yaml
+|   `-- fluxos.md                       # Detalhes operacionais e troubleshooting
+|-- metallb-config.yaml                 # IPAddressPool + L2Advertisement (pre-req da phase 2)
+|-- manifests/                          # Phase 2: helm install + kubectl apply manual
+|   |-- README.md                       # Passo a passo
+|   |-- 01-subscriber-sync-config.yaml  # ConfigMap com PROJECT_ID, SUBSCRIBER_NAME etc
+|   |-- 02-subscriber-sync-script.yaml  # ConfigMap com sync.sh
+|   |-- 03-subscriber-sync-rbac.yaml    # SA + Role + RoleBinding do CronJob
+|   |-- 04-subscriber-sync-cronjob.yaml # CronJob que puxa o bundle do subscriber
+|   |-- 05-infisical-lb-service.yaml    # Service LoadBalancer do Infisical
+|   |-- 06-corebank-secrets.yaml        # InfisicalSecret (sync de DB_URL etc)
+|   |-- 07-httpbin-apolo.yaml           # Deployment + Ingress com auth-tls
+|   |-- 08-httpbin-corebank.yaml        # Deployment cliente mTLS + sidecar curl
+|   `-- 09-mtls-test.yaml               # Pod efemero para teste pontual de mTLS
 `-- terraform/
     |-- certs/
     |   `-- cert.pem          # Certificado da CA (download do painel)
@@ -293,7 +293,8 @@ Os detalhes operacionais dos dois fluxos da POC (rotacao de cert via PKI
 Subscriber + gerenciamento de secrets via InfisicalSecret) e o
 troubleshooting comum estao em **[docs/fluxos.md](docs/fluxos.md)**.
 
-Tambem la: como rodar o teste end-to-end de mTLS com o `mtls-test.yaml`.
+Tambem la: como rodar o teste end-to-end de mTLS (via sidecar `curl-client`
+do `httpbin-corebank` ou via pod efemero `manifests/09-mtls-test.yaml`).
 
 ---
 

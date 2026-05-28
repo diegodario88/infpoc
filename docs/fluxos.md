@@ -64,16 +64,20 @@ emite um novo cert imediatamente; na proxima execucao do CronJob o Secret
 e atualizado e o Reloader dispara rollout do pod. Tambem da pra forcar o
 sync manual com o `kubectl create job --from=cronjob/...` acima.
 
-### Por que o `mtls-test` pod nao reinicia
+### Quem reage e quem nao reage ao Reloader
 
-O `mtls-test.yaml` monta o Secret como **volume** (nao subPath), e o processo
-principal e apenas `sleep infinity`. O kubelet atualiza o conteudo do volume
-in-place em ~60s quando o Secret muda, e o `curl` le o arquivo a cada chamada,
-sempre pegando o cert atual. Por isso esse pod nao precisa do Reloader.
+O pod do `manifests/09-mtls-test.yaml` e o sidecar `curl-client` do `httpbin-corebank` montam o
+Secret como **volume** (nao subPath). Como o processo principal e apenas
+`sleep infinity` e o `curl` e invocado a cada chamada, eles **leem o
+arquivo do volume on-demand**, sempre pegando o cert atual. O kubelet
+sincroniza o conteudo do volume em ~60s quando o Secret muda. Por isso
+esses dois nao precisam do Reloader.
 
-Ja o `httpbin-corebank` tem um processo persistente que carrega o cert na
-memoria no startup. Para esse caso o Reloader e necessario — daí a annotation
-`secret.reloader.stakater.com/reload` no Deployment.
+Ja o container `httpbin` (servidor) do `httpbin-corebank` tem um processo
+persistente que carrega o cert na memoria no startup. Para esse caso o
+Reloader e necessario — daí a annotation `secret.reloader.stakater.com/reload`
+no Deployment, que dispara rolling restart do pod (com seus 2 containers)
+quando o Secret muda.
 
 ---
 
@@ -99,7 +103,7 @@ Rolling restart do httpbin-corebank com a env var nova
 
 ### Manifesto
 
-Arquivo: `corebank-secrets.yaml`
+Arquivo: `manifests/06-corebank-secrets.yaml`
 
 ```yaml
 apiVersion: secrets.infisical.com/v1alpha1
@@ -137,8 +141,8 @@ Pre-requisitos no painel:
 
 ### Consumo no Deployment
 
-O `httpbin-corebank.yaml` ja faz `envFrom` do Secret materializado e tem
-a annotation do Reloader cobrindo ambos os secrets (cert + app env):
+O `manifests/08-httpbin-corebank.yaml` ja faz `envFrom` do Secret materializado
+e tem a annotation do Reloader cobrindo ambos os secrets (cert + app env):
 
 ```yaml
 metadata:
@@ -152,6 +156,9 @@ spec:
           envFrom:
             - secretRef:
                 name: corebank-app-env
+        - name: curl-client    # sidecar para chamadas mTLS reais (curl)
+          image: curlimages/curl:latest
+          command: ["sleep", "infinity"]
 ```
 
 ### Verificando o ciclo
@@ -178,31 +185,52 @@ kubectl annotate infisicalsecret corebank-app-secrets -n corebank-apps \
 
 ```bash
 POD=$(kubectl get pod -n corebank-apps -l app=httpbin-corebank -o name | head -1)
-kubectl exec -n corebank-apps $POD -- env | grep DB_URL
+kubectl exec -n corebank-apps $POD -c httpbin -- env | grep DB_URL
 ```
+
+Note o `-c httpbin` — o pod tem dois containers (`httpbin` e `curl-client`),
+e a env var so esta no servidor.
 
 ---
 
 ## Teste end-to-end de mTLS
 
 Demonstra que o cert emitido pelo subscriber autentica corretamente contra
-o Nginx Ingress com `auth-tls-verify-client: on`.
+o Nginx Ingress com `auth-tls-verify-client: on`. Existem duas formas:
+
+### A) Service-to-service real (sidecar `curl-client` do httpbin-corebank)
+
+E o cenario que reflete producao — um servico chamando outro com o cert
+montado no proprio pod. Pre-requisito: `manifests/07-httpbin-apolo.yaml`
+e `manifests/08-httpbin-corebank.yaml` ja aplicados.
 
 ```bash
-kubectl apply -f httpbin-apolo.yaml
-kubectl apply -f mtls-test.yaml
-kubectl wait pod/mtls-test -n corebank-apps --for=condition=Ready --timeout=30s
-
 INGRESS_IP=$(kubectl get svc -n ingress-nginx ingress-nginx-controller \
   -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 
 # Sem cert — esperado 400
-kubectl exec -n corebank-apps mtls-test -- \
+kubectl exec -n corebank-apps deploy/httpbin-corebank -c curl-client -- \
   curl -sk -o /dev/null -w "sem cert: %{http_code}\n" \
   --resolve apolo.service.internal:443:$INGRESS_IP \
   https://apolo.service.internal/get
 
 # Com cert — esperado 200
+kubectl exec -n corebank-apps deploy/httpbin-corebank -c curl-client -- \
+  curl -sk -o /dev/null -w "com cert: %{http_code}\n" \
+  --resolve apolo.service.internal:443:$INGRESS_IP \
+  --cert /etc/certs/tls.crt --key /etc/certs/tls.key \
+  https://apolo.service.internal/get
+```
+
+A flag `-c curl-client` direciona o `exec` para o sidecar (o pod tem 2
+containers: `httpbin` servidor + `curl-client` sidecar).
+
+### B) Pod efemero (mtls-test) para teste pontual sem alterar workloads
+
+```bash
+kubectl apply -f manifests/09-mtls-test.yaml
+kubectl wait pod/mtls-test -n corebank-apps --for=condition=Ready --timeout=30s
+
 kubectl exec -n corebank-apps mtls-test -- \
   curl -sk -o /dev/null -w "com cert: %{http_code}\n" \
   --resolve apolo.service.internal:443:$INGRESS_IP \
@@ -210,7 +238,7 @@ kubectl exec -n corebank-apps mtls-test -- \
   https://apolo.service.internal/get
 
 # Limpeza
-kubectl delete -f mtls-test.yaml
+kubectl delete -f manifests/09-mtls-test.yaml
 ```
 
 ---

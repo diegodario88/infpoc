@@ -22,6 +22,10 @@ e PKI Subscriber ja cadastrados no painel do Infisical.
 | 8 | RBAC do CronJob | `03-subscriber-sync-rbac.yaml` |
 | 9 | CronJob `subscriber-sync` | `04-subscriber-sync-cronjob.yaml` |
 | 10 | Service LoadBalancer do Infisical | `05-infisical-lb-service.yaml` |
+| 11 | `InfisicalSecret` (sync de secrets de app) | `06-corebank-secrets.yaml` |
+| 12 | Deployment + Ingress do httpbin-apolo (servidor mTLS) | `07-httpbin-apolo.yaml` |
+| 13 | Deployment do httpbin-corebank (cliente + sidecar curl) | `08-httpbin-corebank.yaml` |
+| 14 | Pod efemero `mtls-test` (opcional, teste pontual) | `09-mtls-test.yaml` |
 
 ## Variaveis usadas nos comandos
 
@@ -99,7 +103,7 @@ kubectl create secret generic infisical-ca \
 
 ## 5. Secret com as credenciais da Machine Identity
 
-Consumido pelo CronJob de sync e pelo `InfisicalSecret` (corebank-secrets.yaml).
+Consumido pelo CronJob de sync e pelo `InfisicalSecret` (`06-corebank-secrets.yaml`).
 Cria em ambos os namespaces porque cada um tem um consumer diferente:
 
 ```bash
@@ -170,8 +174,57 @@ kubectl get secret corebank-client-tls-secret -n corebank-apps \
     -ext subjectAltName,extendedKeyUsage
 ```
 
-A partir daqui o fluxo e o mesmo da versao terraform. Para os fluxos
-detalhados de rotacao e troubleshooting, ver
+## 13. Aplicar os manifestos de aplicacao
+
+Com a infra pronta e o cert sincronizado, sobe as apps:
+
+```bash
+# InfisicalSecret — sincroniza DB_URL do painel para o Secret corebank-app-env
+kubectl apply -f manifests/06-corebank-secrets.yaml
+
+# Espera o operator materializar o Secret (ate 60s)
+kubectl get secret corebank-app-env -n corebank-apps -w
+# Ctrl-C quando aparecer DATA > 0
+
+# httpbin-apolo: servidor com Ingress mTLS (auth-tls-verify-client: on)
+kubectl apply -f manifests/07-httpbin-apolo.yaml
+
+# httpbin-corebank: cliente com sidecar curl
+kubectl apply -f manifests/08-httpbin-corebank.yaml
+
+kubectl wait --for=condition=Ready pod -l app=httpbin-corebank \
+  -n corebank-apps --timeout=60s
+kubectl get pod -n corebank-apps -l app=httpbin-corebank
+# Esperado: READY 2/2 (httpbin + curl-client)
+```
+
+## 14. Teste service-to-service real
+
+Do sidecar do corebank, chamada autenticada para o ingress do apolo:
+
+```bash
+INGRESS_IP=$(kubectl get svc -n ingress-nginx ingress-nginx-controller \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# Sem cert — esperado 400
+kubectl exec -n corebank-apps deploy/httpbin-corebank -c curl-client -- \
+  curl -sk -o /dev/null -w "sem cert: %{http_code}\n" \
+  --resolve apolo.service.internal:443:$INGRESS_IP \
+  https://apolo.service.internal/get
+
+# Com cert — esperado 200
+kubectl exec -n corebank-apps deploy/httpbin-corebank -c curl-client -- \
+  curl -sk -o /dev/null -w "com cert: %{http_code}\n" \
+  --resolve apolo.service.internal:443:$INGRESS_IP \
+  --cert /etc/certs/tls.crt --key /etc/certs/tls.key \
+  https://apolo.service.internal/get
+
+# Env var do InfisicalSecret no container do servidor
+kubectl exec -n corebank-apps deploy/httpbin-corebank -c httpbin -- \
+  env | grep DB_URL
+```
+
+Para fluxos detalhados de rotacao e troubleshooting, ver
 [../docs/fluxos.md](../docs/fluxos.md).
 
 ---

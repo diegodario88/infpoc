@@ -9,6 +9,9 @@ metadata:
     # Reloader observa estes Secrets; rolling restart sempre que:
     #  - corebank-client-tls-secret: rotacao do cert mTLS (PKI Subscriber)
     #  - corebank-app-env:           mudanca nos secrets de aplicacao (InfisicalSecret)
+    # Apenas o container `httpbin` precisa do restart (carrega o cert na memoria
+    # no startup). O sidecar `curl-client` le o arquivo do volume a cada invocacao,
+    # entao ja vê o cert novo sem restart — kubelet sincroniza o volume em ~60s.
     secret.reloader.stakater.com/reload: "corebank-client-tls-secret,corebank-app-env"
 spec:
   replicas: 1
@@ -30,6 +33,15 @@ spec:
                 name: corebank-app-env
           volumeMounts:
             # Monta o certificado emitido pelo Infisical PKI
+            - name: mtls-cert
+              mountPath: /etc/certs
+              readOnly: true
+        # Sidecar com curl para fazer chamadas mTLS reais para outros services
+        # (ex: ingress do apolo). A imagem do httpbin nao tem curl instalado.
+        - name: curl-client
+          image: curlimages/curl:latest
+          command: ["sleep", "infinity"]
+          volumeMounts:
             - name: mtls-cert
               mountPath: /etc/certs
               readOnly: true
