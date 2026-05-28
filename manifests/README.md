@@ -25,7 +25,6 @@ e PKI Subscriber ja cadastrados no painel do Infisical.
 | 11 | `InfisicalSecret` (sync de secrets de app) | `06-corebank-secrets.yaml` |
 | 12 | Deployment + Ingress do httpbin-apolo (servidor mTLS) | `07-httpbin-apolo.yaml` |
 | 13 | Deployment do httpbin-corebank (cliente + sidecar curl) | `08-httpbin-corebank.yaml` |
-| 14 | Pod efemero `mtls-test` (opcional, teste pontual) | `09-mtls-test.yaml` |
 
 ## Variaveis usadas nos comandos
 

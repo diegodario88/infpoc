@@ -66,18 +66,22 @@ sync manual com o `kubectl create job --from=cronjob/...` acima.
 
 ### Quem reage e quem nao reage ao Reloader
 
-O pod do `manifests/09-mtls-test.yaml` e o sidecar `curl-client` do `httpbin-corebank` montam o
-Secret como **volume** (nao subPath). Como o processo principal e apenas
-`sleep infinity` e o `curl` e invocado a cada chamada, eles **leem o
-arquivo do volume on-demand**, sempre pegando o cert atual. O kubelet
-sincroniza o conteudo do volume em ~60s quando o Secret muda. Por isso
-esses dois nao precisam do Reloader.
+O pod do `httpbin-corebank` tem dois containers, e cada um se comporta
+diferente quando o cert rotaciona:
 
-Ja o container `httpbin` (servidor) do `httpbin-corebank` tem um processo
-persistente que carrega o cert na memoria no startup. Para esse caso o
-Reloader e necessario — daí a annotation `secret.reloader.stakater.com/reload`
-no Deployment, que dispara rolling restart do pod (com seus 2 containers)
-quando o Secret muda.
+- **`curl-client` (sidecar)** — monta o Secret como **volume** (nao subPath),
+  e o processo principal e apenas `sleep infinity`. O `curl` e invocado
+  a cada chamada e **le o arquivo do volume on-demand**, sempre pegando
+  o cert atual. O kubelet sincroniza o conteudo do volume em ~60s quando
+  o Secret muda. Esse container **nao precisaria do Reloader**.
+
+- **`httpbin` (servidor)** — processo persistente que carrega o cert na
+  memoria no startup. Esse precisa do Reloader.
+
+Como o Reloader atua no nivel do Pod (nao do container), o rolling restart
+disparado pela annotation `secret.reloader.stakater.com/reload` recria os
+**dois** containers. Nao tem efeito colateral para o sidecar — ele
+simplesmente volta a fazer `sleep infinity` no novo pod.
 
 ---
 
@@ -196,13 +200,12 @@ e a env var so esta no servidor.
 ## Teste end-to-end de mTLS
 
 Demonstra que o cert emitido pelo subscriber autentica corretamente contra
-o Nginx Ingress com `auth-tls-verify-client: on`. Existem duas formas:
+o Nginx Ingress com `auth-tls-verify-client: on`. Faz a chamada do proprio
+sidecar `curl-client` do `httpbin-corebank` — cenario que reflete producao,
+um servico chamando outro com o cert montado no proprio pod.
 
-### A) Service-to-service real (sidecar `curl-client` do httpbin-corebank)
-
-E o cenario que reflete producao — um servico chamando outro com o cert
-montado no proprio pod. Pre-requisito: `manifests/07-httpbin-apolo.yaml`
-e `manifests/08-httpbin-corebank.yaml` ja aplicados.
+Pre-requisito: `manifests/07-httpbin-apolo.yaml` e
+`manifests/08-httpbin-corebank.yaml` ja aplicados.
 
 ```bash
 INGRESS_IP=$(kubectl get svc -n ingress-nginx ingress-nginx-controller \
@@ -224,22 +227,6 @@ kubectl exec -n corebank-apps deploy/httpbin-corebank -c curl-client -- \
 
 A flag `-c curl-client` direciona o `exec` para o sidecar (o pod tem 2
 containers: `httpbin` servidor + `curl-client` sidecar).
-
-### B) Pod efemero (mtls-test) para teste pontual sem alterar workloads
-
-```bash
-kubectl apply -f manifests/09-mtls-test.yaml
-kubectl wait pod/mtls-test -n corebank-apps --for=condition=Ready --timeout=30s
-
-kubectl exec -n corebank-apps mtls-test -- \
-  curl -sk -o /dev/null -w "com cert: %{http_code}\n" \
-  --resolve apolo.service.internal:443:$INGRESS_IP \
-  --cert /etc/certs/tls.crt --key /etc/certs/tls.key \
-  https://apolo.service.internal/get
-
-# Limpeza
-kubectl delete -f manifests/09-mtls-test.yaml
-```
 
 ---
 
