@@ -11,7 +11,7 @@ o Stakater Reloader faz rolling restart do pod quando o cert renova.
 Cliente
     |
     v
-Nginx Ingress Controller (unico componente que conhece o ca.crt da CA)
+Nginx Ingress Controller (único componente que conhece o ca.crt da CA)
     |
     | mTLS: valida o certificado do Pod usando ca.crt
     v
@@ -21,13 +21,13 @@ Pod da aplicacao (certificado emitido pelo Infisical PKI)
 Infisical PKI (Certificate Authority)
 ```
 
-O Nginx Ingress e o unico ponto que precisa conhecer o certificado da CA.
+O Nginx Ingress é o único ponto que precisa conhecer o certificado da CA.
 Quando a CA for rotacionada no Infisical, apenas o Secret `infisical-ca`
 no namespace `ingress-nginx` precisa ser atualizado, sem impacto nos pods.
 
 ## Pre-requisitos
 
-Ferramentas necessarias instaladas e funcionando:
+Ferramentas necessárias instaladas e funcionando:
 
 - Docker
 - Terraform >= 1.0 (apenas para a phase 1 - cluster + Infisical)
@@ -48,7 +48,7 @@ instalar o binario Kind separadamente.
 |-- docs/
 |   `-- fluxos.md                       # Detalhes operacionais e troubleshooting
 |-- metallb-config.yaml                 # IPAddressPool + L2Advertisement (pre-req da phase 2)
-|-- manifests/                          # Phase 2: helm install + kubectl apply manual
+|-- manifests/                          # Fase 2: helm install + kubectl apply manual
 |   |-- README.md                       # Passo a passo
 |   |-- 01-subscriber-sync-config.yaml  # ConfigMap com PROJECT_ID, SUBSCRIBER_NAME etc
 |   |-- 02-subscriber-sync-script.yaml  # ConfigMap com sync.sh
@@ -69,7 +69,7 @@ instalar o binario Kind separadamente.
         `-- outputs.tf
 ```
 
-> **Importante:** O `certs/cert.pem` nao deve ser commitado. `.gitignore`:
+> **Importante:** O `certs/cert.pem` não deve ser commitado. `.gitignore`:
 >
 > ```
 > certs/
@@ -78,9 +78,9 @@ instalar o binario Kind separadamente.
 > *.tfstate.backup
 > ```
 
-## Dependencias entre Componentes
+## Dependências entre Componentes
 
-E fundamental entender a ordem de dependencia antes de executar qualquer passo:
+É fundamental entender a ordem de dependência antes de executar qualquer passo:
 
 ```
 Kind Cluster (Terraform phase1)
@@ -98,10 +98,10 @@ Kind Cluster (Terraform phase1)
             +-- PKI Subscriber         <-- corebank-mtls com auto-renewal
             |
             v
-    MetalLB (instalacao manual via Helm + kubectl)
+    MetalLB (instalação manual via Helm + kubectl)
             |
             v
-    Manifests da phase 2 (manifests/ via helm + kubectl)
+    Manifestos da fase 2 (manifests/ via helm + kubectl)
             |
             +-- Nginx Ingress Controller (LoadBalancer via MetalLB)
             +-- infisical-secrets-operator
@@ -112,12 +112,12 @@ Kind Cluster (Terraform phase1)
 
 ## Passo a Passo
 
-### Phase 1 - Cluster e Infisical
+### Fase 1 - Cluster e Infisical
 
-**1. Clone o repositorio e entre no diretorio da phase1:**
+**1. Clone o repositorio e entre no diretório da phase1:**
 
 ```bash
-cd terraform/phase1
+cd terraform/fase1
 ```
 
 **2. Inicialize e aplique o Terraform:**
@@ -141,7 +141,7 @@ Isso cria:
 kubectl get pods -n infisical -w
 ```
 
-**4. Faca o port-forward para acessar o Infisical:**
+**4. Faça o port-forward para acessar o Infisical:**
 
 ```bash
 kubectl port-forward -n infisical svc/infisical-lb 3000:80
@@ -153,13 +153,13 @@ Acesse `http://localhost:3000` no browser.
 
 ### Configuracao Manual do Infisical
 
-Esta etapa e obrigatoria e deve ser feita antes da phase 2.
+Esta etapa é obrigatória e deve ser feita antes da fase 2.
 Os valores obtidos aqui (Client ID, Client Secret, Project ID, Subscriber)
-serao exportados como variaveis de ambiente nos comandos de `manifests/`.
+serão exportados como variáveis de ambiente nos comandos de `manifests/`.
 
 **5. Crie a conta de administrador** no primeiro acesso ao painel.
 
-**6. Crie a organizacao e o projeto PKI:**
+**6. Crie a organização e o projeto PKI:**
 
 - Anote o **Project ID** (UUID) em `Project Settings`
 
@@ -193,7 +193,7 @@ serao exportados como variaveis de ambiente nos comandos de `manifests/`.
   - **Extended Key Usage:** Client Auth
 - Em `Advanced`:
   - **Auto Renewal:** habilitado
-  - **Renewal Before:** `1 day` (ou `15 minutes` se possivel)
+  - **Renewal Before:** `1 day` (ou `15 minutes` se possível)
 - Apos criar, clique em `Issue Certificate` uma vez para gerar o primeiro cert.
   O CronJob nao emite, apenas sincroniza o bundle ja existente.
 
@@ -201,7 +201,7 @@ serao exportados como variaveis de ambiente nos comandos de `manifests/`.
 
 ### Instalacao do MetalLB
 
-Esta etapa e necessaria para que o Nginx Ingress receba um IP externo via LoadBalancer.
+Esta etapa e necessária para que o Nginx Ingress receba um IP externo via LoadBalancer.
 
 **11. Adicione o repositorio e instale o MetalLB:**
 
@@ -247,9 +247,9 @@ kubectl get l2advertisement -n metallb-system
 
 ---
 
-### Phase 2 - Nginx Ingress, Reloader, Secrets Operator e Subscriber sync
+### Fase 2 - Nginx Ingress, Reloader, Secrets Operator e Subscriber sync
 
-A phase 2 e feita inteiramente com `helm install` e `kubectl apply` — sem
+A fase 2 é feita inteiramente com `helm install` e `kubectl apply` — sem
 Terraform. O passo a passo completo (3 charts, 4 Secrets via `kubectl create`,
 5 manifestos YAML, validacao) esta em
 **[manifests/README.md](manifests/README.md)**.
@@ -258,23 +258,23 @@ Resumo do que vai ser criado:
 
 - Nginx Ingress Controller (LoadBalancer via MetalLB)
 - Stakater Reloader (rollout do pod quando o Secret muda)
-- infisical-secrets-operator (sincroniza secrets de aplicacao)
+- infisical-secrets-operator (sincroniza secrets de aplicação)
 - Secret `infisical-ca` em `ingress-nginx` e `apolo-apps` (com o `cert.pem`)
 - Secret `infisical-operator-auth` em `infisical` e `corebank-apps`
 - ConfigMap + RBAC + CronJob `subscriber-sync` no `corebank-apps`
 - Service LoadBalancer para o Infisical
 
-Apos rodar os passos do `manifests/README.md`, verifique:
+Após rodar os passos do `manifests/README.md`, verifique:
 
 ```bash
 # Secret materializado pelo sync
 kubectl get secret corebank-client-tls-secret -n corebank-apps
 
-# Serial gravado na annotation deve casar com o cert atual no painel
+# Serial gravado na anotação deve casar com o cert atual no painel
 kubectl get secret corebank-client-tls-secret -n corebank-apps \
-  -o jsonpath='{.metadata.annotations.infisical\.com/serial}'; echo
+  -o jsonpath='{.metadata.anotações.infisical\.com/serial}'; echo
 
-# Inspecao do cert emitido
+# Inspeção do cert emitido
 kubectl get secret corebank-client-tls-secret -n corebank-apps \
   -o jsonpath='{.data.tls\.crt}' | base64 -d \
   | openssl x509 -noout -subject -issuer -dates \
@@ -288,18 +288,18 @@ kubectl get svc -n ingress-nginx ingress-nginx-controller
 
 ## Fluxos e Troubleshooting
 
-Os detalhes operacionais dos dois fluxos da POC (rotacao de cert via PKI
+Os detalhes operacionais dos dois fluxos da POC (rotação de cert via PKI
 Subscriber + gerenciamento de secrets via InfisicalSecret) e o
-troubleshooting comum estao em **[docs/fluxos.md](docs/fluxos.md)**.
+troubleshooting comum estão em **[docs/fluxos.md](docs/fluxos.md)**.
 
-Tambem la: como rodar o teste end-to-end de mTLS via sidecar `curl-client`
+Também lá: como rodar o teste end-to-end de mTLS via sidecar `curl-client`
 do `httpbin-corebank`.
 
 ---
 
 ## Componentes e Versoes
 
-| Componente                 | Versao   | Namespace      |
+| Componente                 | Versão   | Namespace      |
 | -------------------------- | -------- | -------------- |
 | Kubernetes (Kind)          | v1.29.7  | -              |
 | Infisical                  | v0.151.0 | infisical      |
