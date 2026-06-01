@@ -1,0 +1,140 @@
+# =============================================================================
+# Apps de demonstracao do mTLS
+# =============================================================================
+#   - httpbin-apolo    : servidor com Ingress nginx exigindo cert de cliente
+#   - httpbin-corebank : cliente (sidecar curl) que monta o cert emitido
+#
+# Pre-requisitos: pki-issuer-stack.yaml aplicado (Secret corebank-client-tls-
+# secret existe), ingress-nginx instalado, Secret infisical-ca em apolo-apps,
+# e o Secret corebank-app-env (fluxo 2 ou stub — ver GUIA.md).
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin-apolo
+  namespace: apolo-apps
+  labels:
+    app: httpbin-apolo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: httpbin-apolo
+  template:
+    metadata:
+      labels:
+        app: httpbin-apolo
+    spec:
+      containers:
+        - name: httpbin
+          image: kennethreitz/httpbin:latest
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin-apolo
+  namespace: apolo-apps
+spec:
+  selector:
+    app: httpbin-apolo
+  ports:
+    - port: 80
+      targetPort: 80
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: httpbin-apolo-ingress
+  namespace: apolo-apps
+  annotations:
+    # Exige que o cliente apresente um certificado
+    nginx.ingress.kubernetes.io/auth-tls-verify-client: "on"
+    # Secret com a CA deve estar no mesmo namespace do Ingress
+    nginx.ingress.kubernetes.io/auth-tls-secret: "apolo-apps/infisical-ca"
+    nginx.ingress.kubernetes.io/auth-tls-verify-depth: "1"
+    # Injeta o certificado do cliente nos headers para a aplicacao
+    nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: apolo.service.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: httpbin-apolo
+                port:
+                  number: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin-corebank
+  namespace: corebank-apps
+  labels:
+    app: httpbin-corebank
+  annotations:
+    # Reloader observa estes Secrets; rolling restart sempre que:
+    #  - corebank-client-tls-secret: rotacao do cert mTLS (cert-manager + Issuer)
+    #  - corebank-app-env:           mudanca nos secrets de app (fluxo 2)
+    secret.reloader.stakater.com/reload: "corebank-client-tls-secret,corebank-app-env"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: httpbin-corebank
+  template:
+    metadata:
+      labels:
+        app: httpbin-corebank
+    spec:
+      containers:
+        - name: httpbin
+          image: kennethreitz/httpbin:latest
+          ports:
+            - containerPort: 80
+          envFrom:
+            - secretRef:
+                name: corebank-app-env
+          volumeMounts:
+            # Cert emitido pelo cert-manager (Certificate corebank-mtls)
+            - name: mtls-cert
+              mountPath: /etc/certs
+              readOnly: true
+        # Sidecar com curl para chamadas mTLS reais (httpbin nao tem curl)
+        - name: curl-client
+          image: curlimages/curl:latest
+          command: ["sleep", "infinity"]
+          volumeMounts:
+            - name: mtls-cert
+              mountPath: /etc/certs
+              readOnly: true
+      volumes:
+        - name: mtls-cert
+          secret:
+            secretName: corebank-client-tls-secret
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin-corebank
+  namespace: corebank-apps
+spec:
+  selector:
+    app: httpbin-corebank
+  ports:
+    - port: 80
+      targetPort: 80
+  type: ClusterIP

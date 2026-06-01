@@ -68,7 +68,7 @@ resource "kubernetes_deployment" "infisical" {
       spec {
         container {
           name  = "infisical"
-          image = "docker.io/infisical/infisical:v0.151.0"
+          image = "docker.io/infisical/infisical:v0.160.9"
 
           port {
             container_port = 8080

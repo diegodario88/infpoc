@@ -1,0 +1,86 @@
+# =============================================================================
+# Stack de emissao de certificados: cert-manager + Infisical PKI Issuer
+# =============================================================================
+# Aplique DEPOIS de instalar cert-manager + infisical-pki-issuer e de criar:
+#   - o Secret pki-issuer-auth (clientSecret do identity do Cert Manager)
+#   - o certificate template no Infisical (via API — ver GUIA.md)
+#
+# Contem 3 recursos:
+#   1. Issuer        — delega a assinatura ao Infisical PKI
+#   2. Certificate   — declara o cert mTLS; cert-manager emite e auto-renova
+#   3. RBAC approve  — deixa o cert-manager aprovar os CertificateRequests
+# -----------------------------------------------------------------------------
+apiVersion: infisical-issuer.infisical.com/v1alpha1
+kind: Issuer
+metadata:
+  name: infisical-pki-issuer
+  namespace: corebank-apps
+spec:
+  # URL interna do Infisical no cluster
+  url: "http://infisical-lb.infisical.svc.cluster.local"
+  # ID do projeto de Certificate Manager (workspace type=cert-manager)
+  projectId: "02fe8004-3d64-4857-a333-8196dcd71782"
+  # Nome do certificate template (criado via API — ver GUIA.md). O issuer 0.1.1
+  # assina via POST /api/v2/pki/certificate-templates/{nome}/sign-certificate.
+  certificateTemplateName: "corebank-mtls"
+  authentication:
+    universalAuth:
+      # Client ID da Machine Identity do projeto de Certificate Manager
+      clientId: "82098b4d-0263-4f2a-a9ae-312c7b40d3cb"
+      # Secret K8s com o clientSecret DESSE identity (key: clientSecret)
+      secretRef:
+        name: "pki-issuer-auth"
+        key: "clientSecret"
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: corebank-mtls
+  namespace: corebank-apps
+spec:
+  # cert-manager grava tls.crt/tls.key/ca.crt aqui e renova automaticamente.
+  # Mesmo nome/tipo/chaves do fluxo antigo → Reloader e volumes inalterados.
+  secretName: corebank-client-tls-secret
+  commonName: corebank.service.internal
+  dnsNames:
+    - corebank.service.internal
+    - corebank.corebank-apps.svc.cluster.local
+    - httpbin-corebank.corebank-apps.svc.cluster.local
+  duration: 48h       # validade
+  renewBefore: 24h    # cert-manager renova quando faltar isso p/ expirar
+  usages:
+    - client auth     # EKU clientAuth — cliente mTLS
+    - digital signature
+    - key encipherment
+  privateKey:
+    algorithm: RSA    # alinhado a CA interna (RSA 2048)
+    size: 2048
+  issuerRef:
+    name: infisical-pki-issuer
+    kind: Issuer
+    group: infisical-issuer.infisical.com
+---
+# Sem este RBAC os CertificateRequests do issuer ficam presos em "pending".
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: infisical-issuer-approver
+rules:
+  - apiGroups: ["cert-manager.io"]
+    resources: ["signers"]
+    verbs: ["approve"]
+    resourceNames:
+      - "issuers.infisical-issuer.infisical.com/corebank-apps.infisical-pki-issuer"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: infisical-issuer-approver-binding
+subjects:
+  - kind: ServiceAccount
+    name: cert-manager
+    namespace: cert-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: infisical-issuer-approver
