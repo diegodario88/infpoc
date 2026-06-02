@@ -2,7 +2,8 @@
 # Stack de emissao de certificados: cert-manager + Infisical PKI Issuer
 # =============================================================================
 # Aplique DEPOIS de instalar cert-manager + infisical-pki-issuer e de criar:
-#   - o Secret pki-issuer-auth (clientSecret do identity do Cert Manager)
+#   - o Secret infisical-operator-auth (clientId+clientSecret da identity
+#     org-level; compartilhado com o fluxo 2 / InfisicalSecret)
 #   - o certificate template no Infisical (via API — ver GUIA.md)
 #
 # Contem 3 recursos:
@@ -19,17 +20,18 @@ spec:
   # URL interna do Infisical no cluster
   url: "http://infisical-lb.infisical.svc.cluster.local"
   # ID do projeto de Certificate Manager (workspace type=cert-manager)
-  projectId: "02fe8004-3d64-4857-a333-8196dcd71782"
+  projectId: "afcf983e-dbb3-462a-b888-19199afb312f"
   # Nome do certificate template (criado via API — ver GUIA.md). O issuer 0.1.1
   # assina via POST /api/v2/pki/certificate-templates/{nome}/sign-certificate.
   certificateTemplateName: "corebank-mtls"
   authentication:
     universalAuth:
-      # Client ID da Machine Identity do projeto de Certificate Manager
-      clientId: "82098b4d-0263-4f2a-a9ae-312c7b40d3cb"
-      # Secret K8s com o clientSecret DESSE identity (key: clientSecret)
+      # Machine Identity ORG-LEVEL (a mesma usada pelo InfisicalSecret/fluxo 2),
+      # adicionada tanto ao projeto Cert Manager quanto ao Secrets Management.
+      clientId: "9636d6bd-e147-4135-84d4-316400a3a383"
+      # Reaproveita o Secret unico infisical-operator-auth (key clientSecret).
       secretRef:
-        name: "pki-issuer-auth"
+        name: "infisical-operator-auth"
         key: "clientSecret"
 ---
 apiVersion: cert-manager.io/v1

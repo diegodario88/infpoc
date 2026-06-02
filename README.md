@@ -59,6 +59,7 @@ o certificado do cliente (mTLS).
 | Redis                    | 7.2.4    | infisical            |
 | cert-manager             | latest   | cert-manager         |
 | Infisical PKI Issuer     | 0.1.1    | infisical-pki-issuer |
+| Infisical Secrets Operator | 0.11.0 | infisical            |
 | Nginx Ingress Controller | latest   | ingress-nginx        |
 | Stakater Reloader        | latest   | reloader             |
 | MetalLB                  | 0.14.9   | metallb-system       |

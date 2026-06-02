@@ -46,14 +46,20 @@ helm repo add metallb https://metallb.github.io/metallb && helm repo update
 helm upgrade --install metallb metallb/metallb \
   --namespace metallb-system --create-namespace --version 0.14.9 --wait
 
-# Confirme que o range em metallb-config.yaml bate com a subnet docker do Kind:
-docker network inspect kind | grep -i subnet     # ex.: 172.22.0.0/16
+# A subnet docker do Kind VARIA por máquina/instalação. Descubra a sua:
+docker network inspect kind | grep -i subnet     # ex.: 172.18.0.0/16
+
+# EDITE metallb-config.yaml para um range DENTRO dessa subnet, ex.:
+#   addresses: [ 172.18.255.200-172.18.255.250 ]
 kubectl apply -f metallb-config.yaml
+kubectl get ipaddresspool -n metallb-system -o jsonpath='{.items[0].spec.addresses}'; echo
 ```
 
 > Use a versão **0.14.9** (versões >= 0.15 quebram com `nil pointer ...
 > prometheus.serviceMonitor` no subchart frr-k8s). **Sem aplicar o
-> `metallb-config.yaml`** o IP do Ingress fica `<pending>` para sempre.
+> `metallb-config.yaml`** o IP do Ingress fica `<pending>` para sempre. E se o
+> range estiver **fora da subnet docker**, o IP atribuído não é roteável (o
+> teste mTLS falha na conexão) — por isso confira/edite o range acima.
 
 ---
 
@@ -65,15 +71,19 @@ kubectl port-forward -n infisical svc/infisical-lb 3000:80 &
 ```
 
 Na v0.160 a organização já vem com os produtos prontos no `Overview`. Entre em
-**Certificate Manager** e crie um **projeto** (ex.: `gzbank-pki`). Dentro dele:
+**Certificate Manager** e crie um **projeto** (ex.: `gzbank-pki`).
 
-1. **CA interna** — `Settings > Internal Certificate Authorities > Create`.
-   Tipo **Root**, Key Algorithm **RSA 2048**, preencha CN/Org/etc. A Root já
-   nasce ativa (botão "Renew CA"; não há passo "Install"). **Anote o CA ID.**
+1. **CA interna** — no projeto: `Settings > Internal Certificate Authorities >
+   Create`. Tipo **Root**, Key Algorithm **RSA 2048**, preencha CN/Org/etc. A
+   Root já nasce ativa (botão "Renew CA"; não há passo "Install"). **Anote o CA ID.**
    - O menu **Signers** é de *code signing*, NÃO é a CA de TLS — não confunda.
-2. **Machine Identity** — `Access Control > Machine Identities > Add`, método
-   **Universal Auth**, Role **Admin** no projeto. **Anote o Client ID e gere o
-   Client Secret** (mostrado uma única vez).
+2. **Machine Identity ORG-LEVEL** — crie em `Organization > Access Control >
+   Identities` (NÃO dentro de um projeto — na v0.160 a identity criada dentro de
+   um projeto fica restrita a ele). Método **Universal Auth**. **Anote o Client
+   ID e gere o Client Secret** (mostrado uma única vez). Depois **adicione essa
+   identity ao projeto** Cert Manager (`projeto > Access Control > Machine
+   Identities > Add`, role **Admin**). A MESMA identity será reutilizada no
+   fluxo 2 (Passo 11) — uma identity para os dois flows.
 3. **Project ID** — descubra via API (usado pelo Issuer):
    ```bash
    TOKEN=$(curl -s -X POST http://localhost:3000/api/v1/auth/universal-auth/login \
@@ -132,15 +142,20 @@ helm upgrade --install reloader stakater/reloader \
 
 ---
 
-## Passo 5 — Secret de autenticação do Issuer
+## Passo 5 — Secret de autenticação (compartilhado)
 
-O Issuer lê o `clientSecret` deste Secret (o `clientId` vai inline no
-manifest). Identity do projeto de **Certificate Manager**:
+Um único Secret `infisical-operator-auth` (com `clientId` + `clientSecret` da
+identity org-level) serve **os dois fluxos**: o Issuer lê a chave `clientSecret`
+dele, e o `InfisicalSecret` (fluxo 2) usa o mesmo Secret via `credentialsRef`.
 
 ```bash
-kubectl create secret generic pki-issuer-auth \
+kubectl create secret generic infisical-operator-auth \
+  --from-literal=clientId="${CLIENT_ID}" \
   --from-literal=clientSecret="${CLIENT_SECRET}" -n corebank-apps
 ```
+
+> O `clientId` também vai inline no `pki-issuer-stack.yaml` (campo `clientId`)
+> — edite com o seu. O `secretRef` do Issuer aponta para este Secret.
 
 ---
 
@@ -273,23 +288,61 @@ kubectl exec -n corebank-apps deploy/httpbin-corebank -c curl-client -- \
 
 ---
 
-## Passo 11 (opcional) — Fluxo 2: secrets de aplicação (InfisicalSecret)
+## Passo 11 — Fluxo 2: secrets de aplicação (InfisicalSecret)
 
-Substitui o stub `corebank-app-env` por sincronização real de um projeto de
-**Secrets Management**. Requer o `secrets-operator` e o projeto configurados.
+Sincroniza secrets de um projeto de **Secrets Management** para o Secret K8s
+`corebank-app-env` (consumido pelo `httpbin-corebank` via `envFrom`); quando um
+secret muda, o Reloader reinicia o pod. Modelo recomendado: **1 projeto
+Infisical por app** (do GitLab), variáveis na **raiz** (`/`) do environment.
+
+**No painel:** crie o projeto de Secrets Management, **adicione a MESMA identity
+org-level do Passo 3** (role Admin) e cadastre as variáveis na raiz do env
+Development. Anote o **project slug**. O Secret K8s de auth
+(`infisical-operator-auth`) já foi criado no Passo 5 — é o mesmo para os dois
+fluxos, não precisa recriar.
 
 ```bash
+# 1. Operator
 helm upgrade --install infisical-secrets-operator infisical-helm-charts/secrets-operator \
-  --namespace infisical --set host=http://infisical-lb.infisical.svc.cluster.local
+  --namespace infisical --set host=http://infisical-lb.infisical.svc.cluster.local --wait
 
-kubectl create secret generic infisical-operator-auth \
-  --from-literal=clientId="<SM_CLIENT_ID>" \
-  --from-literal=clientSecret="<SM_CLIENT_SECRET>" -n corebank-apps
-
-kubectl delete secret corebank-app-env -n corebank-apps   # remove o stub
-# ajuste projectSlug/envSlug/secretsPath em manifests/infisicalsecret.yaml
+# 2. Ajuste manifests/infisicalsecret.yaml: projectSlug, envSlug (dev),
+#    secretsPath ("/"). Atenção: resyncInterval é STRING ("1m") no operator novo.
+#    (o credentialsRef já aponta para infisical-operator-auth, criado no Passo 5)
+kubectl delete secret corebank-app-env -n corebank-apps --ignore-not-found  # remove o stub
 kubectl apply -f manifests/infisicalsecret.yaml
+
+# 3. Como o app já estava rodando com o stub, force 1 rollout para carregar o
+#    secret real (a transição stub->real é delete+create e o Reloader não a pega;
+#    mudanças POSTERIORES são update in-place e disparam o Reloader sozinhas).
+kubectl rollout restart deploy/httpbin-corebank -n corebank-apps
 ```
+
+Validação:
+
+```bash
+kubectl get infisicalsecret -n corebank-apps   # synced N secrets
+kubectl get secret corebank-app-env -n corebank-apps \
+  -o jsonpath='{.data}' | python3 -c 'import sys,json;print(len(json.load(sys.stdin)),"chaves")'
+kubectl exec -n corebank-apps deploy/httpbin-corebank -c httpbin -- env | grep <UMA_CHAVE>
+```
+
+**Teste de propagação** (o que prova o fluxo 2): no painel, adicione/edite uma
+variável no env Development. Em até `resyncInterval` (1m) o operator atualiza o
+Secret K8s **in-place**, o Reloader detecta e reinicia o pod, e o valor novo
+aparece dentro do container:
+
+```bash
+# log do Reloader confirma: "Changes detected in 'corebank-app-env' ... updated
+#   'httpbin-corebank' of type 'Deployment'"
+kubectl get pods -n corebank-apps -l app=httpbin-corebank -w   # rollout
+kubectl exec -n corebank-apps deploy/httpbin-corebank -c httpbin -- env | grep <CHAVE_ALTERADA>
+```
+
+> O reload é feito pelo **Stakater Reloader** (anotação no Deployment), não pela
+> auto-reload nativa do operator (que usa outra anotação,
+> `secrets.infisical.com/auto-reload`). Por isso o status do operator pode dizer
+> "found 0 deployments ... auto redeployed" — é esperado.
 
 ---
 
