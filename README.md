@@ -45,9 +45,11 @@ o certificado do cliente (mTLS).
 │   ├── apps.yaml                  # httpbin-apolo (servidor) + httpbin-corebank (cliente)
 │   └── infisicalsecret.yaml       # fluxo 2 (secrets de app) — opcional
 └── terraform/                     # cluster Kind + Infisical + Postgres + Redis
-    ├── main.tf, infra-poc.tf, providers.tf, variables.tf, outputs.tf
-    └── certs/cert.pem             # certificado da CA (não versionado)
+    └── main.tf, infra-poc.tf, providers.tf, variables.tf, outputs.tf
 ```
+
+> A CA não precisa ser baixada do painel: o `ca.crt` que o cert-manager grava
+> no Secret emitido é usado direto para criar o `infisical-ca` (ver GUIA Passo 8).
 
 ## Componentes e versões
 
@@ -70,4 +72,5 @@ o certificado do cliente (mTLS).
   a CA de TLS — a CA interna fica em `Settings > Internal Certificate Authorities`.
 - O PKI Issuer 0.1.1 assina via um **certificate template** (criado por API; a UI
   só expõe "Certificate Profiles") — detalhes no [GUIA.md](GUIA.md).
-- `terraform/certs/cert.pem` não deve ser commitado (já no `.gitignore`).
+- Uma única Machine Identity **org-level** e um único Secret `infisical-operator-auth`
+  atendem os dois fluxos (cert + secrets de app).

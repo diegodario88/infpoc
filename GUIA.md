@@ -217,22 +217,18 @@ kubectl get secret corebank-client-tls-secret -n corebank-apps \
 ## Passo 8 — CA no Ingress + apps de demonstração
 
 O Nginx valida o cert do cliente contra o Secret `infisical-ca` (mesmo
-namespace do Ingress). Pegue a CA do `ca.crt` que o cert-manager já gravou:
+namespace do Ingress). A CA já está no `ca.crt` que o cert-manager gravou no
+Secret emitido — crie o `infisical-ca` direto dele (não precisa baixar nada do
+painel nem manter arquivo):
 
 ```bash
-kubectl get secret corebank-client-tls-secret -n corebank-apps \
-  -o jsonpath='{.data.ca\.crt}' | base64 -d > terraform/certs/cert.pem
-openssl x509 -in terraform/certs/cert.pem -noout -subject   # confere a CA
-
-kubectl create secret generic infisical-ca \
-  --from-file=ca.crt=terraform/certs/cert.pem -n apolo-apps
+kubectl create secret generic infisical-ca -n apolo-apps \
+  --from-literal=ca.crt="$(kubectl get secret corebank-client-tls-secret \
+    -n corebank-apps -o jsonpath='{.data.ca\.crt}' | base64 -d)"
 ```
 
-> O download da CA pelo painel às vezes vem vazio (`undefined`). Extrair do
-> `ca.crt` do Secret (acima) é o jeito confiável.
-
 O `httpbin-corebank` usa `corebank-app-env` via `envFrom`. Para o demo de
-cert/mTLS, crie um **stub** (o fluxo real é o opcional Passo 12):
+cert/mTLS, crie um **stub** (o fluxo real é o Passo 11):
 
 ```bash
 kubectl create secret generic corebank-app-env \
@@ -377,6 +373,5 @@ cd terraform && terraform destroy -auto-approve && cd ..
   webhook vazio; aplique o patch do Passo 4.
 - **EXTERNAL-IP `<pending>`** — `metallb-config.yaml` não aplicado ou range fora
   da subnet docker (`docker network inspect kind`).
-- **`cert.pem` vazio/`undefined`** — extraia do `ca.crt` do Secret (Passo 8).
 - **Login 401 / identity em lockout** — confira o `clientSecret`; reset em
   `Organization > Access Control > Identities > ... > Universal Auth > Reset Lockouts`.
