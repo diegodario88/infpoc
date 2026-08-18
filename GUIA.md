@@ -6,8 +6,15 @@ rotação automática com **Stakater Reloader** e teste **mTLS** end-to-end no
 Nginx Ingress. Para a visão geral/arquitetura, veja o [README](README.md).
 
 Validado com **Infisical v0.160.9**, Kubernetes (Kind) **v1.29.7**,
-cert-manager (jetstack), **infisical-pki-issuer 0.1.1**, ingress-nginx,
-reloader e MetalLB 0.14.9.
+cert-manager **v1.21.1**, **infisical-pki-issuer chart 0.1.1 + imagem
+`v0.2.0`**, ingress-nginx **4.15.1**, reloader **2.2.16**, secrets-operator
+**0.11.8** e MetalLB **0.14.9**.
+
+> **Fixe as versões — inclusive a da imagem.** Todos os comandos `helm` deste
+> guia passam `--version`, e o PKI Issuer fixa também a **tag da imagem**. O
+> chart 0.1.1 traz `image.tag: latest` como default, e `latest` hoje serve o
+> binário **1.0.0**, que espera um `Issuer` de schema diferente do que este
+> repo usa. Sem fixar a tag, o Passo 7 falha. Ver o troubleshooting no fim.
 
 > **Convenção:** todos os comandos rodam da raiz do repo. Valores entre
 > `<...>` você substitui pelos seus (anotados no Passo 3).
@@ -111,24 +118,26 @@ export CA_ID="<CA_ID>"
 # cert-manager (com CRDs)
 helm repo add jetstack https://charts.jetstack.io && helm repo update
 helm upgrade --install cert-manager jetstack/cert-manager \
-  --namespace cert-manager --create-namespace --set crds.enabled=true --wait
+  --namespace cert-manager --create-namespace \
+  --version v1.21.1 --set crds.enabled=true --wait
 
 # Infisical PKI Issuer (mesmo repo Helm do secrets-operator)
 helm repo add infisical-helm-charts \
   'https://dl.cloudsmith.io/public/infisical/helm-charts/helm/charts/' && helm repo update
 helm upgrade --install infisical-pki-issuer infisical-helm-charts/infisical-pki-issuer \
-  --namespace infisical-pki-issuer --create-namespace --wait
+  --namespace infisical-pki-issuer --create-namespace \
+  --version 0.1.1 --set controllerManager.manager.image.tag=v0.2.0 --wait
 
 # Ingress Nginx (LoadBalancer via MetalLB)
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx && helm repo update
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-  --namespace ingress-nginx --create-namespace \
+  --namespace ingress-nginx --create-namespace --version 4.15.1 \
   --set controller.service.type=LoadBalancer --wait --timeout 5m
 
 # Stakater Reloader (rollout quando o Secret muda)
 helm repo add stakater https://stakater.github.io/stakater-charts && helm repo update
 helm upgrade --install reloader stakater/reloader \
-  --namespace reloader --create-namespace --wait
+  --namespace reloader --create-namespace --version 2.2.16 --wait
 ```
 
 > **Se o `ingress-nginx` der timeout no `--wait`:** o controller pode ter
@@ -161,7 +170,7 @@ kubectl create secret generic infisical-operator-auth \
 
 ## Passo 6 — Certificate template (via API)
 
-O `infisical-pki-issuer` 0.1.1 assina via
+O `infisical-pki-issuer` (chart 0.1.1, imagem `v0.2.0`) assina via
 `POST /api/v2/pki/certificate-templates/{nome}/sign-certificate` — ou seja,
 exige um **certificate template** (por nome). A UI da v0.160 só mostra
 "Certificate Profiles", mas os templates continuam na API:
@@ -200,6 +209,9 @@ kubectl apply -f manifests/pki-issuer-stack.yaml
 Valide a emissão:
 
 ```bash
+# use o nome COMPLETO do CRD: "kubectl get issuer" resolve para o do
+# cert-manager e responde "No resources found", escondendo o Issuer real.
+kubectl get issuers.infisical-issuer.infisical.com -n corebank-apps   # Ready=True
 kubectl describe certificate corebank-mtls -n corebank-apps   # Ready=True
 kubectl get certificaterequest -n corebank-apps               # APPROVED + READY
 kubectl get secret corebank-client-tls-secret -n corebank-apps \
@@ -265,22 +277,69 @@ kubectl exec -n corebank-apps deploy/httpbin-corebank -c curl-client -- \
 Renovação → Secret atualizado → Reloader → rolling restart → pod novo já com o
 cert novo, tudo automático.
 
+**1. Anote o serial atual** (é a referência da comparação):
+
 ```bash
-# serial antes
 kubectl get secret corebank-client-tls-secret -n corebank-apps \
-  -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -serial
+  -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -serial -dates
+```
 
-# força renovação (sem esperar renewBefore)
+**2. Abra o watch ANTES de disparar.** O ciclo renew → Secret → Reloader →
+rollout leva poucos segundos, e `-w` só mostra o que muda depois de conectar:
+se você renovar primeiro, vai encontrar a troca já em andamento. Use dois
+terminais —
+
+```bash
+# terminal A — deixe rodando primeiro
+kubectl get pods -n corebank-apps -l app=httpbin-corebank -w
+
+# terminal B — dispara a renovação, sem esperar o renewBefore
 cmctl renew corebank-mtls -n corebank-apps
+```
 
-# Reloader loga "Changes detected in 'corebank-client-tls-secret' ... updated
-# 'httpbin-corebank' Deployment" e o pod é recriado:
-kubectl get pods -n corebank-apps -l app=httpbin-corebank -w   # rollout; Ctrl-C
+— ou um só, jogando o watch para segundo plano (`--watch-only` omite a
+listagem inicial, então tudo que aparecer é mudança de verdade):
 
-# serial montado no pod NOVO já é o renovado:
+```bash
+kubectl get pods -n corebank-apps -l app=httpbin-corebank --watch-only &
+cmctl renew corebank-mtls -n corebank-apps
+```
+
+**3. Confirme.** Nada aqui depende de timing — todas as evidências ficam
+registradas, então dá para conferir com calma depois:
+
+```bash
+# quem disparou o rollout, e por qual Secret (o deploy é "reloader-reloader",
+# com o prefixo do release Helm — não "reloader"):
+kubectl logs -n reloader deploy/reloader-reloader --tail=50 | grep -i "changes detected"
+# esperado: Changes detected in 'corebank-client-tls-secret' of type 'SECRET'
+#   ... updated 'httpbin-corebank' of type 'Deployment'
+
+# serial e notBefore novos no Secret:
+kubectl get secret corebank-client-tls-secret -n corebank-apps \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -serial -dates
+
+# e o serial montado no pod NOVO é o mesmo — a prova de que o pod pegou o cert
+# renovado, sem ninguém tocar no Deployment:
 kubectl exec -n corebank-apps deploy/httpbin-corebank -c curl-client -- \
   cat /etc/certs/tls.crt | openssl x509 -noout -serial
 ```
+
+> **Como o Reloader dispara o rollout:** ele injeta no container uma variável
+> de ambiente com o *hash* do conteúdo do Secret
+> (`STAKATER_COREBANK_CLIENT_TLS_SECRET_SECRET`). Quando o Secret muda, o hash
+> muda, o pod template muda — e o Deployment faz rollout pela mecânica normal
+> do Kubernetes. O Reloader não reinicia pod nenhum; só reescreve esse valor.
+> Para ver a marca:
+> ```bash
+> kubectl get deploy httpbin-corebank -n corebank-apps \
+>   -o jsonpath='{.spec.template.spec.containers[0].env}'; echo
+> ```
+
+> **Só aparece um CertificateRequest?** Depois da renovação, `kubectl get
+> certificaterequest -n corebank-apps` mostra apenas o `corebank-mtls-2`. O
+> `-1` não falhou: o `Certificate` tem `revisionHistoryLimit` 1 por padrão, e o
+> cert-manager descarta o request anterior a cada emissão.
 
 ---
 
@@ -300,7 +359,8 @@ fluxos, não precisa recriar.
 ```bash
 # 1. Operator
 helm upgrade --install infisical-secrets-operator infisical-helm-charts/secrets-operator \
-  --namespace infisical --set host=http://infisical-lb.infisical.svc.cluster.local --wait
+  --namespace infisical --version 0.11.8 \
+  --set host=http://infisical-lb.infisical.svc.cluster.local --wait
 
 # 2. Ajuste manifests/infisicalsecret.yaml: projectSlug, envSlug (dev),
 #    secretsPath ("/"). Atenção: resyncInterval é STRING ("1m") no operator novo.
@@ -329,9 +389,14 @@ Secret K8s **in-place**, o Reloader detecta e reinicia o pod, e o valor novo
 aparece dentro do container:
 
 ```bash
-# log do Reloader confirma: "Changes detected in 'corebank-app-env' ... updated
-#   'httpbin-corebank' of type 'Deployment'"
-kubectl get pods -n corebank-apps -l app=httpbin-corebank -w   # rollout
+# abra o watch ANTES de editar a variável no painel (mesmo motivo do Passo 10)
+kubectl get pods -n corebank-apps -l app=httpbin-corebank --watch-only &
+
+# o log do Reloader confirma o gatilho (deploy "reloader-reloader"):
+kubectl logs -n reloader deploy/reloader-reloader --tail=50 | grep -i "changes detected"
+# esperado: Changes detected in 'corebank-app-env' ... updated 'httpbin-corebank'
+#   of type 'Deployment'
+
 kubectl exec -n corebank-apps deploy/httpbin-corebank -c httpbin -- env | grep <CHAVE_ALTERADA>
 ```
 
@@ -362,11 +427,39 @@ cd terraform && terraform destroy -auto-approve && cd ..
 
 ## Troubleshooting
 
+- **`unknown field "spec.projectId"` (e `certificateTemplateName`,
+  `authentication.universalAuth`) no `kubectl apply` do Passo 7** — o chart
+  instalado é o **1.0.0**, que reescreveu o CRD do `Issuer` (passou a usar
+  `application` + `profile`). Confira com `helm list -n infisical-pki-issuer`.
+  Como o Helm **não** atualiza CRDs em upgrade/downgrade, voltar para a 0.1.1
+  exige apagá-los:
+  ```bash
+  helm uninstall infisical-pki-issuer -n infisical-pki-issuer
+  kubectl delete crd issuers.infisical-issuer.infisical.com \
+                    clusterissuers.infisical-issuer.infisical.com
+  # reinstale com o comando do Passo 4 (com --version e --set da imagem)
+  ```
+- **`unsupported authentication method: ""` no status do Issuer** — CRD 0.1.1
+  com binário 1.0.0. Acontece quando o chart é fixado mas a imagem não: o
+  código novo procura `spec.authentication.method`, campo que o CRD 0.1.1 nem
+  tem. Corrija a tag da imagem (`--set controllerManager.manager.image.tag=v0.2.0`).
+- **`Observed a panic ... nil pointer dereference` em `signer.go` nos logs do
+  issuer** — imagem **v0.1.1** com o CRD 0.1.1. Aquele binário assina por
+  `caId` no endpoint `/api/v1/pki/certificates/sign-certificate` e não conhece
+  `certificateTemplateName`; a API responde erro, o código não checa o status
+  HTTP e estoura. A imagem que casa com este repo é a **v0.2.0**, que usa
+  `POST /api/v2/pki/certificate-templates/{nome}/sign-certificate`. Confirme
+  com:
+  ```bash
+  kubectl get deploy -n infisical-pki-issuer \
+    -o jsonpath='{.items[*].spec.template.spec.containers[*].image}'
+  # esperado: docker.io/infisical/pki-issuer:v0.2.0
+  ```
 - **CertificateRequest preso em `pending`** — falta o RBAC `approve` (no
   `pki-issuer-stack.yaml`); confira `kubectl get clusterrole infisical-issuer-approver`
   e se o `resourceName` casa com `corebank-apps.infisical-pki-issuer`.
 - **Certificate não fica Ready** — veja `kubectl describe certificate corebank-mtls -n corebank-apps`
-  e os logs: `kubectl logs -n infisical-pki-issuer deploy/infisical-pki-issuer` e
+  e os logs: `kubectl logs -n infisical-pki-issuer deploy/infisical-pki-issuer-controller-manager` e
   `kubectl logs -n cert-manager deploy/cert-manager`. Causas: `projectId`/template
   errado, "Certificate template ... not found", identity sem permissão de emitir.
 - **Ingress: `x509: certificate signed by unknown authority`** — caBundle do

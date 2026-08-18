@@ -59,11 +59,11 @@ o certificado do cliente (mTLS).
 | Infisical                | v0.160.9 | infisical            |
 | PostgreSQL               | 15.5     | infisical            |
 | Redis                    | 7.2.4    | infisical            |
-| cert-manager             | latest   | cert-manager         |
-| Infisical PKI Issuer     | 0.1.1    | infisical-pki-issuer |
-| Infisical Secrets Operator | 0.11.0 | infisical            |
-| Nginx Ingress Controller | latest   | ingress-nginx        |
-| Stakater Reloader        | latest   | reloader             |
+| cert-manager             | v1.21.1  | cert-manager         |
+| Infisical PKI Issuer     | chart 0.1.1 · imagem `v0.2.0` | infisical-pki-issuer |
+| Infisical Secrets Operator | 0.11.8 | infisical            |
+| Nginx Ingress Controller | 4.15.1   | ingress-nginx        |
+| Stakater Reloader        | 2.2.16   | reloader             |
 | MetalLB                  | 0.14.9   | metallb-system       |
 
 ## Notas importantes
@@ -74,3 +74,7 @@ o certificado do cliente (mTLS).
   só expõe "Certificate Profiles") — detalhes no [GUIA.md](GUIA.md).
 - Uma única Machine Identity **org-level** e um único Secret `infisical-operator-auth`
   atendem os dois fluxos (cert + secrets de app).
+- **Versões são fixadas de propósito** — inclusive a *tag da imagem* do PKI
+  Issuer. O chart 0.1.1 aponta para `latest`, que hoje serve o binário 1.0.0
+  (schema de `Issuer` incompatível com este repo). Os comandos do
+  [GUIA.md](GUIA.md) já passam `--version` e `--set ...image.tag=v0.2.0`.
