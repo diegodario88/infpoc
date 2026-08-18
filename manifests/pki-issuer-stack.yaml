@@ -20,7 +20,7 @@ spec:
   # URL interna do Infisical no cluster
   url: "http://infisical-lb.infisical.svc.cluster.local"
   # ID do projeto de Certificate Manager (workspace type=cert-manager)
-  projectId: "afcf983e-dbb3-462a-b888-19199afb312f"
+  projectId: "3c1b428b-b532-4316-bdf8-fe564da9f5dd"
   # Nome do certificate template (criado via API — ver GUIA.md). O issuer 0.1.1
   # assina via POST /api/v2/pki/certificate-templates/{nome}/sign-certificate.
   certificateTemplateName: "corebank-mtls"
@@ -28,7 +28,7 @@ spec:
     universalAuth:
       # Machine Identity ORG-LEVEL (a mesma usada pelo InfisicalSecret/fluxo 2),
       # adicionada tanto ao projeto Cert Manager quanto ao Secrets Management.
-      clientId: "9636d6bd-e147-4135-84d4-316400a3a383"
+      clientId: "28d40858-ee60-46e9-98f1-680e791c6c9d"
       # Reaproveita o Secret unico infisical-operator-auth (key clientSecret).
       secretRef:
         name: "infisical-operator-auth"
@@ -48,14 +48,14 @@ spec:
     - corebank.service.internal
     - corebank.corebank-apps.svc.cluster.local
     - httpbin-corebank.corebank-apps.svc.cluster.local
-  duration: 48h       # validade
-  renewBefore: 24h    # cert-manager renova quando faltar isso p/ expirar
+  duration: 48h # validade
+  renewBefore: 24h # cert-manager renova quando faltar isso p/ expirar
   usages:
-    - client auth     # EKU clientAuth — cliente mTLS
+    - client auth # EKU clientAuth — cliente mTLS
     - digital signature
     - key encipherment
   privateKey:
-    algorithm: RSA    # alinhado a CA interna (RSA 2048)
+    algorithm: RSA # alinhado a CA interna (RSA 2048)
     size: 2048
   issuerRef:
     name: infisical-pki-issuer
